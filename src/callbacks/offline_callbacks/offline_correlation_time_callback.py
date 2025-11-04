@@ -90,6 +90,7 @@ class OfflineCorrelationTimeCallback(PeriodicCallback):
             cur_preds_std = torch.std(cur_preds, dim=1, unbiased=False)
             cur_target_std = torch.std(cur_target, dim=1, unbiased=False)
             # calculate mean correlation per timestep
+            # print(cur_preds.shape, cur_target.shape, cur_preds_mean.shape, cur_target_mean.shape, cur_preds_std.shape, cur_target_std.shape)
             mean_corr_per_timestep = (
                     torch.mean((cur_preds - cur_preds_mean) * (cur_target - cur_target_mean), dim=1)
                     / (cur_preds_std * cur_target_std).clamp(min=1e-12)

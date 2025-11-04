@@ -1,0 +1,26 @@
+# sweep.yaml
+program: sweep_runner.py
+project: UPT_trl2d_sweep
+entity: Zenithon-AI
+project: UPT_trl2d_sweep
+method: random
+name: trl2d-upt-sweep
+run_cap: 12
+
+metric:
+  name: loss/online/x_hat/E1
+  goal: minimize
+
+parameters:
+  # encoder/decoder widths (kept symmetric and divisible by heads)
+  encdec_width:
+    values: [64, 96]                  # encoder enc_dim/gnn_dim and decoder perc_dim
+  latent_dim:
+    values: [128, 192, 256]
+  # Perceiver-style latent tokens (compute vs. capacity trade-off)
+  num_latent_tokens:
+    values: [256, 512]
+  # keep attention heads fixed so all dims are divisible
+  num_attn_heads:
+    value: 4
+

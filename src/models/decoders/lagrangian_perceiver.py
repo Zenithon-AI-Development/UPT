@@ -18,8 +18,16 @@ class LagrangianPerceiver(SingleModelBase):
         self.num_attn_heads = num_attn_heads
 
         # input/output shape
-        num_channels, _ = self.output_shape
-        _, input_dim = self.input_shape
+        if self.output_shape is not None and len(self.output_shape) == 2:
+            num_channels = self.output_shape[1]
+        else:
+            num_channels = self.data_container.get_dataset().metadata["dim"]
+        
+        if self.input_shape is not None and len(self.input_shape) == 2:
+            input_dim = self.input_shape[1]
+        else:
+            input_dim = self.data_container.get_dataset().metadata["dim"]
+        
         ndim = self.data_container.get_dataset().metadata["dim"]
 
         # input projection

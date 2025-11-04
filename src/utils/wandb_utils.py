@@ -77,21 +77,59 @@ def init_wandb(
             logging.info(f"tags:")
             for tag in tags:
                 logging.info(f"- {tag}")
-        wandb.init(
-            entity=wandb_config.entity,
-            project=wandb_config.project,
+        init_timeout = int(os.environ.get("WANDB_INIT_TIMEOUT", "300"))  # allow override via env
+        settings = wandb.Settings(init_timeout=init_timeout)  # <- documented SDK knob
+
+        name = run_name or "None"
+        if path_provider.stage_name != "default_stage":
+            name += f"/{path_provider.stage_name}"
+        wandb_id = path_provider.stage_id
+
+        # Detect sweep mode: the agent sets a sweep id internally
+        # (Settings has 'sweep_id'; presence means we’re under an agent-run).
+        is_sweep = bool(os.environ.get("WANDB_SWEEP_ID"))
+
+        # Base kwargs common to both sweep & non-sweep runs
+        init_kwargs = dict(
             name=name,
             dir=str(path_provider.stage_output_path),
             save_code=False,
             config=config,
             mode=wandb_config.mode,
-            id=wandb_id,
-            # add default tag to mark runs which have not been looked at in W&B
-            # ints need to be cast to string
-            tags=["new"] + [str(tag) for tag in tags],
             notes=notes,
-            group=group or wandb_id,
+            settings=settings,
         )
+
+        if is_sweep:
+            # Under a sweep, entity/project/run_id are controlled by the agent & sweep config
+            # Keep tags optional; many users prefer to let the sweep own grouping/tagging as well.
+            pass
+        else:
+            # Normal (non-sweep) run: we provide entity/project/id/tags/group
+            init_kwargs.update(
+                entity=wandb_config.entity,
+                project=wandb_config.project,
+                id=wandb_id,
+                group=group or wandb_id,
+                tags=["new"] + [str(tag) for tag in (tags or [])],
+            )
+
+        wandb.init(**init_kwargs)
+        # wandb.init(
+        #     entity=wandb_config.entity,
+        #     project=wandb_config.project,
+        #     name=name,
+        #     dir=str(path_provider.stage_output_path),
+        #     save_code=False,
+        #     config=config,
+        #     mode=wandb_config.mode,
+        #     id=wandb_id,
+        #     # add default tag to mark runs which have not been looked at in W&B
+        #     # ints need to be cast to string
+        #     tags=["new"] + [str(tag) for tag in tags],
+        #     notes=notes,
+        #     group=group or wandb_id,
+        # )
     config_provider.update(config)
 
     # log additional environment properties

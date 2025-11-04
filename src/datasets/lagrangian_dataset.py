@@ -287,6 +287,15 @@ class LagrangianDataset(DatasetBase):
     def getshape_timestep(self):
         return max(self.metadata['sequence_length_train'], self.metadata['sequence_length_test']),
     
+    def getshape_x(self):
+        # After collation and flattening: (num_particles, (n_input_timesteps-1) * spatial_dim)
+        # For n_input_timesteps=3: (n_particles, 2*2) = (n_particles, 4)
+        return None, (self.n_input_timesteps - 1) * self.metadata['dim']
+    
+    def getshape_target(self):
+        # Shape: (num_points, num_channels) for acceleration prediction
+        return None, self.metadata['dim']
+    
     def getitem_curr_pos(self, idx, ctx=None):
         positions, _ = self.getter(idx, ctx, downsample=True)
         input_positions = positions[:self.n_input_timesteps,:,:]
@@ -434,8 +443,13 @@ class LagrangianDataset(DatasetBase):
     
     def getitem_prev_acc(self, idx, ctx=None):
         positions, _ = self.getter(idx, ctx, downsample=False)
-        prev_acc = self.get_accelerations(positions[-4:,:,:]).squeeze()
-        return prev_acc[0,:,:]
+        prev_acc = self.get_accelerations(positions[-4:,:,:])
+        if prev_acc.ndim == 3 and prev_acc.shape[0] > 0:
+            return prev_acc[0,:,:]
+        elif prev_acc.ndim == 2:
+            return prev_acc
+        else:
+            return prev_acc.squeeze()
     
     def getitem_prev_pos(self, idx, ctx=None):
         positions, _ = self.getter(idx, ctx, downsample=False)

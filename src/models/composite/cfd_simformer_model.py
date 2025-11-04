@@ -1,6 +1,8 @@
 import einops
 import torch
 import torch.nn.functional as F
+import time
+import logging
 
 from models import model_from_kwargs
 from models.base.composite_model_base import CompositeModelBase
@@ -28,6 +30,9 @@ class CfdSimformerModel(CompositeModelBase):
             static_ctx=self.static_ctx,
             data_container=self.data_container,
         )
+        # Timing tracking variables
+        self.batch_counter = 0
+        self.timing_enabled = True
         # timestep embed
         self.conditioner = create(
             conditioner,
@@ -108,6 +113,12 @@ class CfdSimformerModel(CompositeModelBase):
     ):
         outputs = {}
 
+        # Start timing (disabled by default to avoid overhead)
+        timing_enabled = getattr(self, 'timing_enabled', False)
+        if timing_enabled:
+            torch.cuda.synchronize() if torch.cuda.is_available() else None
+            batch_start_time = time.time()
+
         # encode timestep t
         if self.conditioner is not None:
             condition = self.conditioner(timestep=timestep, velocity=velocity)
@@ -123,6 +134,10 @@ class CfdSimformerModel(CompositeModelBase):
             static_tokens = None
 
         # encode data ((x_{t-2}, x_{t-1} -> dynamic_{t-1})
+        if timing_enabled:
+            torch.cuda.synchronize() if torch.cuda.is_available() else None
+            encoder_start_time = time.time()
+        
         prev_dynamics = self.encoder(
             x,
             mesh_pos=mesh_pos,
@@ -131,17 +146,35 @@ class CfdSimformerModel(CompositeModelBase):
             condition=condition,
             static_tokens=static_tokens,
         )
+        
+        if timing_enabled:
+            torch.cuda.synchronize() if torch.cuda.is_available() else None
+            encoder_time = time.time() - encoder_start_time
+        
         outputs["prev_dynamics"] = prev_dynamics
 
         # predict current latent (dynamic_{t-1} -> dynamic_t)
+        if timing_enabled:
+            torch.cuda.synchronize() if torch.cuda.is_available() else None
+            latent_start_time = time.time()
+        
         dynamics = self.latent(
             prev_dynamics,
             condition=condition,
             static_tokens=static_tokens,
         )
+        
+        if timing_enabled:
+            torch.cuda.synchronize() if torch.cuda.is_available() else None
+            latent_time = time.time() - latent_start_time
+        
         outputs["dynamics"] = dynamics
 
         # decode next_latent to next_data (dynamic_t -> x_t)
+        if timing_enabled:
+            torch.cuda.synchronize() if torch.cuda.is_available() else None
+            decoder_start_time = time.time()
+        
         if self.force_decoder_fp32:
             with torch.autocast(device_type=str(dynamics.device).split(":")[0], enabled=False):
                 x_hat = self.decoder(
@@ -159,6 +192,25 @@ class CfdSimformerModel(CompositeModelBase):
                 unbatch_select=unbatch_select,
                 condition=condition,
             )
+        
+        if timing_enabled:
+            torch.cuda.synchronize() if torch.cuda.is_available() else None
+            decoder_time = time.time() - decoder_start_time
+            total_time = time.time() - batch_start_time
+            
+            # Log timing information per batch
+            self.batch_counter += 1
+            import sys
+            print(f"\n{'='*60}", flush=True)
+            print(f"Batch {self.batch_counter} - Component Timing:", flush=True)
+            print(f"{'='*60}", flush=True)
+            print(f"  Encoder:      {encoder_time*1000:.2f} ms ({encoder_time/total_time*100:.1f}%)", flush=True)
+            print(f"  Approximator: {latent_time*1000:.2f} ms ({latent_time/total_time*100:.1f}%)", flush=True)
+            print(f"  Decoder:      {decoder_time*1000:.2f} ms ({decoder_time/total_time*100:.1f}%)", flush=True)
+            print(f"  Total:        {total_time*1000:.2f} ms", flush=True)
+            print(f"{'='*60}\n", flush=True)
+            sys.stdout.flush()
+        
         outputs["x_hat"] = x_hat
 
         # reconstruct dynamics_t from (x_{t-1}, \hat{x}_t)

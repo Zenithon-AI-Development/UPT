@@ -1,0 +1,180 @@
+wandb: guz_trl2d_tests
+name: trl2d-baseline-256lat
+stage_name: stage1
+vars:
+  lr: 5.0e-5
+  batch_size: 4
+  max_batch_size: 4
+  epochs: 500
+  version: v1
+  model_dim: 256
+  num_latent_tokens: 256
+  num_input_points: null #[ 128, 384 ]
+  num_query_points: null # 8192
+  num_supernodes: 2048
+  radius_graph_r: 5.0
+  radius_graph_max_num_neighbors: 32
+  rollout_num_input_points: 49152
+  norm: mean0std1
+  clamp: 0
+  clamp_mode: log
+  max_num_timesteps: 101
+
+  optim:
+    kind: lion
+    lr: ${vars.lr}
+    weight_decay: 0.5
+    schedule:
+      template: ${yaml:schedules/wupcos_epoch_}
+      template.vars.end_epoch: 10
+
+datasets:
+  train:
+    kind: well_trl2d_dataset
+    split: train                # NEW: tell WELL which split
+    well_base_path: /home/workspace/projects/data/datasets_david/datasets/
+    num_input_timesteps: 4
+    # you can leave the next two; they’re swallowed by the dataset anyway
+    num_input_points: ${vars.num_input_points}
+    num_query_points: ${vars.num_query_points}
+    # remove this line (or keep; we swallow it)
+    # num_query_points_mode: arbitrary
+    norm: mean0std1
+    clamp: 0
+    clamp_mode: log
+    max_num_timesteps: 101
+    max_num_sequences: 72
+    collators:
+      - kind: cfd_simformer_collator
+        num_supernodes: ${vars.num_supernodes}
+
+  train_rollout:
+    kind: well_trl2d_dataset
+    split: train
+    well_base_path: /home/workspace/projects/data/datasets_david/datasets/
+    num_input_timesteps: .inf
+    max_num_timesteps: 101
+    max_num_sequences: 72
+    num_input_points: ${vars.rollout_num_input_points}
+    norm: mean0std1
+    clamp: 0
+    clamp_mode: log
+    collators:
+      - kind: cfd_simformer_collator
+        num_supernodes: ${vars.num_supernodes}
+
+  test_rollout:
+    kind: well_trl2d_dataset
+    split: test
+    well_base_path: /home/workspace/projects/data/datasets_david/datasets/
+    num_input_timesteps: .inf
+    max_num_timesteps: 101
+    max_num_sequences: 9
+    num_input_points: ${vars.rollout_num_input_points}
+    norm: mean0std1
+    clamp: 0
+    clamp_mode: log
+    collators:
+      - kind: cfd_simformer_collator
+        num_supernodes: ${vars.num_supernodes}
+
+  valid_rollout:
+    kind: well_trl2d_dataset
+    split: valid
+    well_base_path: /home/workspace/projects/data/datasets_david/datasets/
+    num_input_timesteps: .inf
+    max_num_timesteps: 101
+    max_num_sequences: 9
+    num_input_points: ${vars.rollout_num_input_points}
+    norm: mean0std1
+    clamp: 0
+    clamp_mode: log
+    collators:
+      - kind: cfd_simformer_collator
+        num_supernodes: ${vars.num_supernodes}
+
+  test:
+    kind: well_trl2d_dataset
+    split: test
+    well_base_path: /home/workspace/projects/data/datasets_david/datasets/
+    num_input_timesteps: 4
+    num_input_points: ${vars.num_input_points}
+    num_query_points: ${vars.num_query_points}
+    norm: mean0std1
+    clamp: 0
+    clamp_mode: log
+    max_num_timesteps: 101
+    max_num_sequences: 9
+    collators:
+      - kind: cfd_simformer_collator
+        num_supernodes: ${vars.num_supernodes}
+
+model:
+  kind: cfd_simformer_model
+  conditioner:
+    kind: conditioners.timestep_velocity_conditioner_pdearena
+    kwargs: ${select:dim192:${yaml:models/dim}}
+    optim: ${vars.optim}
+  encoder:
+    kind: encoders.cfd_pool_transformer_perceiver
+    num_latent_tokens: ${vars.num_latent_tokens}
+    enc_depth: 4
+    kwargs: ${select:dim96to192:${yaml:models/encoders/pool_transformer_perceiver}}
+    optim: ${vars.optim}
+  latent:
+    kind: latent.transformer_model
+    depth: 4
+    kwargs: ${select:dim192:${yaml:models/latent/transformer}}
+    optim: ${vars.optim}
+  decoder:
+    kind: decoders.cfd_transformer_perceiver
+    depth: 4
+    use_last_norm: true
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    kwargs: ${select:dim192to96:${yaml:models/decoders/transformer_perceiver}}
+    optim: ${vars.optim}
+
+trainer:
+  kind: cfd_simformer_trainer
+  precision: float32
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  radius_graph_r: ${vars.radius_graph_r}
+  radius_graph_max_num_neighbors: ${vars.radius_graph_max_num_neighbors}
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: mse_loss
+  early_stopper:
+    kind: metric_early_stopper
+    every_n_epochs: 1
+    tolerance: 10
+    metric_key: loss/online/x_hat/E1
+  log_every_n_epochs: 1
+  callbacks:
+    # best checkpoint
+    - kind: best_checkpoint_callback
+      every_n_epochs: 1
+      metric_key: loss/online/x_hat/E1
+      save_optim: true
+    # checkpoints for resuming
+    - kind: checkpoint_callback
+      every_n_epochs: 100
+      save_weights: false
+      save_latest_weights: true
+      save_latest_optim: true
+    # checkpoints for resuming
+    - kind: checkpoint_callback
+      every_n_epochs: 100
+      save_weights: true
+      save_optim: true
+    # train rollout
+    - kind: offline_correlation_time_callback
+      every_n_epochs: 25
+      dataset_key: train_rollout
+    # test rollout
+    - kind: offline_correlation_time_callback
+      every_n_epochs: 25
+      dataset_key: test_rollout

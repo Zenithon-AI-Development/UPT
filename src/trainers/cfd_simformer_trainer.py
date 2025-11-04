@@ -13,6 +13,7 @@ from losses import loss_fn_from_kwargs
 from utils.checkpoint import Checkpoint
 from utils.factory import create
 from .base.sgd_trainer import SgdTrainer
+import kappaprofiler as kp
 
 
 class CfdSimformerTrainer(SgdTrainer):
@@ -117,228 +118,523 @@ class CfdSimformerTrainer(SgdTrainer):
 
         def to_device(self, item, batch, dataset_mode):
             data = ModeWrapper.get_item(mode=dataset_mode, item=item, batch=batch)
+            if data is None:
+                return None
             data = data.to(self.model.device, non_blocking=True)
             return data
 
+        # def prepare(self, batch, dataset_mode=None):
+        #     dataset_mode = dataset_mode or self.trainer.dataset_mode
+        #     batch, ctx = batch
+        #     mesh_pos = self.to_device(item="mesh_pos", batch=batch, dataset_mode=dataset_mode)
+        #     batch_idx = ctx["batch_idx"].to(self.model.device, non_blocking=True)
+        #     data = dict(
+        #         x=self.to_device(item="x", batch=batch, dataset_mode=dataset_mode),
+        #         geometry2d=self.to_device(item="geometry2d", batch=batch, dataset_mode=dataset_mode),
+        #         timestep=self.to_device(item="timestep", batch=batch, dataset_mode=dataset_mode),
+        #         velocity=self.to_device(item="velocity", batch=batch, dataset_mode=dataset_mode),
+        #         query_pos=self.to_device(item="query_pos", batch=batch, dataset_mode=dataset_mode),
+        #         mesh_pos=mesh_pos,
+        #         batch_idx=batch_idx,
+        #         unbatch_idx=ctx["unbatch_idx"].to(self.model.device, non_blocking=True),
+        #         unbatch_select=ctx["unbatch_select"].to(self.model.device, non_blocking=True),
+        #         target=self.to_device(item="target", batch=batch, dataset_mode=dataset_mode),
+        #     )
+        #     mesh_edges = ModeWrapper.get_item(item="mesh_edges", batch=batch, mode=dataset_mode)
+        #     if mesh_edges is None:
+        #         # create mesh edges on GPU
+        #         assert self.trainer.radius_graph_r is not None
+        #         assert self.trainer.radius_graph_max_num_neighbors is not None
+        #         if self.trainer.num_supernodes is None:
+        #             # normal flow direction
+        #             flow = "source_to_target"
+        #             supernode_idxs = None
+        #         else:
+        #             # inverted flow direction is required to have sorted dst_indices
+        #             flow = "target_to_source"
+        #             supernode_idxs = ctx["supernode_idxs"].to(self.model.device, non_blocking=True)
+        #         mesh_edges = radius_graph(
+        #             x=mesh_pos,
+        #             r=self.trainer.radius_graph_r,
+        #             max_num_neighbors=self.trainer.radius_graph_max_num_neighbors,
+        #             batch=batch_idx,
+        #             loop=True,
+        #             flow=flow,
+        #         )
+        #         if supernode_idxs is not None:
+        #             is_supernode_edge = torch.isin(mesh_edges[0], supernode_idxs)
+        #             mesh_edges = mesh_edges[:, is_supernode_edge]
+        #         mesh_edges = mesh_edges.T
+        #     else:
+        #         assert self.trainer.radius_graph_r is None
+        #         assert self.trainer.radius_graph_max_num_neighbors is None
+        #         assert self.trainer.num_supernodes is None
+        #         mesh_edges = mesh_edges.to(self.model.device, non_blocking=True)
+        #     data["mesh_edges"] = mesh_edges
+        #     return data
+
+        # def forward(self, batch, reduction="mean"):
+        #     data = self.prepare(batch=batch)
+
+        #     x = data.pop("x")
+        #     target = data.pop("target")
+        #     batch_idx = data["batch_idx"]
+        #     batch_size = batch_idx.max() + 1
+
+        #     # forward pass
+        #     forward_kwargs = {}
+        #     if self.trainer.reconstruct_from_target:
+        #         forward_kwargs["target"] = target
+        #     model_outputs = self.model(
+        #         x,
+        #         **data,
+        #         **forward_kwargs,
+        #         detach_reconstructions=self.trainer.detach_reconstructions,
+        #         reconstruct_prev_x=self.trainer.reconstruct_prev_x_weight > 0,
+        #         reconstruct_dynamics=self.trainer.reconstruct_dynamics_weight > 0,
+        #     )
+
+        #     infos = {}
+        #     losses = {}
+
+        #     # next timestep loss
+        #     x_hat_loss = self.trainer.loss_function(
+        #         prediction=model_outputs["x_hat"],
+        #         target=target,
+        #         reduction="none",
+        #     )
+        #     infos.update(
+        #         {
+        #             "loss_stats/x_hat/min": x_hat_loss.min(),
+        #             "loss_stats/x_hat/max": x_hat_loss.max(),
+        #             "loss_stats/x_hat/gt1": (x_hat_loss > 1).sum() / x_hat_loss.numel(),
+        #             "loss_stats/x_hat/eq0": (x_hat_loss == 0).sum() / x_hat_loss.numel(),
+        #         }
+        #     )
+        #     # mask high values after some time to avoid instabilities
+        #     if self.trainer.mask_loss_start_checkpoint is not None:
+        #         if self.trainer.mask_loss_start_checkpoint > self.trainer.update_counter.cur_checkpoint:
+        #             x_hat_loss_mask = x_hat_loss > self.trainer.mask_loss_threshold
+        #             x_hat_loss = x_hat_loss[x_hat_loss_mask]
+        #             infos["loss_stats/x_hat/gt_loss_threshold"] = x_hat_loss_mask.sum() / x_hat_loss_mask.numel()
+        #     if reduction == "mean":
+        #         losses["x_hat"] = x_hat_loss.mean()
+        #     elif reduction == "mean_per_sample":
+        #         _, ctx = batch
+        #         num_zero_pos = (data["query_pos"] == 0).sum()
+        #         assert num_zero_pos == 0, f"padded query_pos not supported {num_zero_pos}"
+        #         query_pos_len = data["query_pos"].size(1)
+        #         query_batch_idx = torch.arange(batch_size, device=self.model.device).repeat_interleave(query_pos_len)
+        #         #query_batch_idx = ctx["query_batch_idx"].to(self.model.device, non_blocking=True)
+        #         # indptr is a tensor of indices betweeen which to aggregate
+        #         # i.e. a tensor of [0, 2, 5] would result in [src[0] + src[1], src[2] + src[3] + src[4]]
+        #         indices, counts = query_batch_idx.unique(return_counts=True)
+        #         # first index has to be 0
+        #         padded_counts = torch.zeros(len(indices) + 1, device=counts.device, dtype=counts.dtype)
+        #         padded_counts[indices + 1] = counts
+        #         indptr = padded_counts.cumsum(dim=0)
+        #         losses["x_hat"] = segment_csr(src=x_hat_loss.mean(dim=1), indptr=indptr, reduce="mean")
+        #     else:
+        #         raise NotImplementedError
+        #     total_loss = losses["x_hat"]
+
+
+        #     # num_objects = self.to_device(item="num_objects", batch=batch[0], dataset_mode=self.trainer.dataset_mode),
+        #     # out = self.trainer.path_provider.stage_output_path / f"tensors"
+        #     # out.mkdir(exist_ok=True)
+        #     # torch.save(num_objects, out / f"{self.counter:04d}_numobjects.th")
+        #     # torch.save(x, out / f"{self.counter:04d}_x.th")
+        #     # torch.save(target, out / f"{self.counter:04d}_target.th")
+        #     # torch.save(data["timestep"], out / f"{self.counter:04d}_timestep.th")
+        #     # torch.save(data["velocity"], out / f"{self.counter:04d}_velocity.th")
+        #     # torch.save(data["query_pos"], out / f"{self.counter:04d}_querypos.th")
+        #     # torch.save(data["mesh_pos"], out / f"{self.counter:04d}_meshpos.th")
+        #     # torch.save(data["batch_idx"], out / f"{self.counter:04d}_batchidx.th")
+        #     # torch.save(data["mesh_edges"], out / f"{self.counter:04d}_meshedges.th")
+        #     # torch.save(model_outputs["x_hat"], out / f"{self.counter:04d}_xhat.th")
+        #     # self.counter += 1
+
+        #     # input_reconstruction losses
+        #     if self.trainer.reconstruct_prev_x_weight > 0:
+        #         num_channels = model_outputs["prev_x_hat"].size(1)
+        #         prev_x_hat_loss = self.trainer.loss_function(
+        #             prediction=model_outputs["prev_x_hat"],
+        #             target=x[:, -num_channels:],
+        #             reduction="none",
+        #         )
+        #         if reduction == "mean":
+        #             # mask out reconstruction for timestep==0
+        #             timestep = data["timestep"]
+        #             timestep_per_point = torch.gather(timestep, dim=0, index=batch_idx)
+        #             prev_x_hat_loss = prev_x_hat_loss[timestep_per_point != 0]
+        #             if self.trainer.mask_loss_start_checkpoint is not None:
+        #                 if self.trainer.mask_loss_start_checkpoint > self.trainer.update_counter.cur_checkpoint:
+        #                     prev_x_hat_loss_mask = prev_x_hat_loss > self.trainer.mask_loss_threshold
+        #                     prev_x_hat_loss = prev_x_hat_loss[prev_x_hat_loss_mask]
+        #                     infos["loss_stats/prev_x_hat/gt_loss_threshold"] = \
+        #                         prev_x_hat_loss_mask.sum() / prev_x_hat_loss_mask.numel()
+        #             prev_x_hat_loss = prev_x_hat_loss.mean()
+        #         elif reduction == "mean_per_sample":
+        #             raise NotImplementedError
+        #             # prev_x_hat_loss = prev_x_hat_loss.flatten(start_dim=1).mean(dim=1)
+        #             # # set loss for timestep==0 to 0
+        #             # prev_x_hat_loss[is_timestep0] = 0.
+        #         else:
+        #             raise NotImplementedError
+        #         losses["prev_x_hat"] = prev_x_hat_loss
+        #         total_loss = total_loss + self.trainer.reconstruct_prev_x_weight * prev_x_hat_loss
+
+        #     # dynamics reconstruction losses
+        #     if self.trainer.reconstruct_dynamics_weight > 0:
+        #         dynamics_hat_loss = self.trainer.loss_function(
+        #             prediction=model_outputs["dynamics_hat"],
+        #             target=model_outputs["dynamics"],
+        #             reduction="none",
+        #         )
+        #         max_timestep = self.model.conditioner.num_total_timesteps - 1
+        #         timestep = data["timestep"]
+        #         if reduction == "mean":
+        #             # mask out reconstruction for timestep==T
+        #             dynamics_hat_mask = timestep != max_timestep
+        #             if dynamics_hat_mask.sum() > 0:
+        #                 dynamics_hat_loss = dynamics_hat_loss[dynamics_hat_mask].mean()
+        #             else:
+        #                 dynamics_hat_loss = tc.zeros(size=(1,), device=timestep.device)
+        #         elif reduction == "mean_per_sample":
+        #             # set loss for timestep==0 to 0
+        #             dynamics_hat_loss[timestep == max_timestep] = 0.
+        #             # average per sample
+        #             dynamics_hat_loss = dynamics_hat_loss.flatten(start_dim=1).mean(dim=1)
+        #         else:
+        #             raise NotImplementedError
+        #         losses["dynamics_hat"] = dynamics_hat_loss
+        #         total_loss = total_loss + self.trainer.reconstruct_dynamics_weight * dynamics_hat_loss
+
+        #     infos.update(
+        #         {
+        #             # "tensor_stats/x/absmax": x.abs().max(),
+        #             # "tensor_stats/x/absmin": x.abs().max(),
+        #             # "tensor_stats/x/mean": x.mean(),
+        #             # "tensor_stats/x/absmean": x.abs().mean(),
+        #             # "tensor_stats/x/std": x.std(),
+        #             # "tensor_stats/target/absmax": target.abs().max(),
+        #             # "tensor_stats/target/absmin": target.abs().max(),
+        #             # "tensor_stats/target/mean": target.mean(),
+        #             # "tensor_stats/target/absmean": target.abs().mean(),
+        #             # "tensor_stats/target/std": target.std(),
+        #             # "tensor_stats/timestep/max": data["timestep"].max(),
+        #             # "tensor_stats/timestep/min": data["timestep"].min(),
+        #             # "tensor_stats/timestep/mean": data["timestep"].float().mean(),
+        #             # "tensor_stats/timestep/std": data["timestep"].float().std(),
+        #             # "tensor_stats/velocity/max": data["velocity"].max(),
+        #             # "tensor_stats/velocity/min": data["velocity"].min(),
+        #             # "tensor_stats/velocity/mean": data["velocity"].float().mean(),
+        #             # "tensor_stats/velocity/std": data["velocity"].float().std(),
+        #             # "tensor_stats/x_hat/absmax": model_outputs["x_hat"].abs().max(),
+        #             # "tensor_stats/x_hat/absmin": model_outputs["x_hat"].abs().min(),
+        #             # "tensor_stats/x_hat/mean": model_outputs["x_hat"].mean(),
+        #             # "tensor_stats/x_hat/absmean": model_outputs["x_hat"].abs().mean(),
+        #             # "tensor_stats/x_hat/std": model_outputs["x_hat"].abs().std(),
+        #         },
+        #     )
+        #     # calculate degree of graph (average number of connections p)
+        #     # TODO: degree is incorrectly calculated if num_supernodes is handled by dataset and not by collator
+        #     if self.trainer.num_supernodes is None:
+        #         infos["degree/input"] = len(data["mesh_edges"]) / len(x)
+        #     else:
+        #         infos["degree/input"] = len(data["mesh_edges"]) / (self.trainer.num_supernodes * batch_size)
+
+        #     return dict(total=total_loss, **losses), infos
+
+        # ---------- NEW prepare (decorator-based profiling) ----------
         def prepare(self, batch, dataset_mode=None):
             dataset_mode = dataset_mode or self.trainer.dataset_mode
             batch, ctx = batch
-            mesh_pos = self.to_device(item="mesh_pos", batch=batch, dataset_mode=dataset_mode)
-            batch_idx = ctx["batch_idx"].to(self.model.device, non_blocking=True)
-            data = dict(
-                x=self.to_device(item="x", batch=batch, dataset_mode=dataset_mode),
-                geometry2d=self.to_device(item="geometry2d", batch=batch, dataset_mode=dataset_mode),
-                timestep=self.to_device(item="timestep", batch=batch, dataset_mode=dataset_mode),
-                velocity=self.to_device(item="velocity", batch=batch, dataset_mode=dataset_mode),
-                query_pos=self.to_device(item="query_pos", batch=batch, dataset_mode=dataset_mode),
-                mesh_pos=mesh_pos,
-                batch_idx=batch_idx,
-                unbatch_idx=ctx["unbatch_idx"].to(self.model.device, non_blocking=True),
-                unbatch_select=ctx["unbatch_select"].to(self.model.device, non_blocking=True),
-                target=self.to_device(item="target", batch=batch, dataset_mode=dataset_mode),
-            )
+
+            # ---- host->device copies
+            with kp.profiler.profile("train.update.forward.to_device"):
+                mesh_pos  = self.to_device(item="mesh_pos",   batch=batch, dataset_mode=dataset_mode)
+                batch_idx = ctx["batch_idx"].to(self.model.device, non_blocking=True)
+                data = dict(
+                    x            = self.to_device(item="x",          batch=batch, dataset_mode=dataset_mode),
+                    geometry2d   = self.to_device(item="geometry2d", batch=batch, dataset_mode=dataset_mode),
+                    timestep     = self.to_device(item="timestep",   batch=batch, dataset_mode=dataset_mode),
+                    velocity     = self.to_device(item="velocity",   batch=batch, dataset_mode=dataset_mode),
+                    query_pos    = self.to_device(item="query_pos",  batch=batch, dataset_mode=dataset_mode),
+                    mesh_pos     = mesh_pos,
+                    batch_idx    = batch_idx,
+                    unbatch_idx  = ctx["unbatch_idx"].to(self.model.device, non_blocking=True),
+                    unbatch_select = ctx["unbatch_select"].to(self.model.device, non_blocking=True),
+                    target       = self.to_device(item="target",     batch=batch, dataset_mode=dataset_mode),
+                )
+
+            # ---- build or move mesh edges
             mesh_edges = ModeWrapper.get_item(item="mesh_edges", batch=batch, mode=dataset_mode)
             if mesh_edges is None:
-                # create mesh edges on GPU
-                assert self.trainer.radius_graph_r is not None
-                assert self.trainer.radius_graph_max_num_neighbors is not None
-                if self.trainer.num_supernodes is None:
-                    # normal flow direction
-                    flow = "source_to_target"
-                    supernode_idxs = None
-                else:
-                    # inverted flow direction is required to have sorted dst_indices
-                    flow = "target_to_source"
-                    supernode_idxs = ctx["supernode_idxs"].to(self.model.device, non_blocking=True)
-                mesh_edges = radius_graph(
-                    x=mesh_pos,
-                    r=self.trainer.radius_graph_r,
-                    max_num_neighbors=self.trainer.radius_graph_max_num_neighbors,
-                    batch=batch_idx,
-                    loop=True,
-                    flow=flow,
-                )
-                if supernode_idxs is not None:
-                    is_supernode_edge = torch.isin(mesh_edges[0], supernode_idxs)
-                    mesh_edges = mesh_edges[:, is_supernode_edge]
-                mesh_edges = mesh_edges.T
+                with kp.profiler.profile("train.update.forward.graph"):
+                    assert self.trainer.radius_graph_r is not None
+                    assert self.trainer.radius_graph_max_num_neighbors is not None
+                    if self.trainer.num_supernodes is None:
+                        flow = "source_to_target"
+                        supernode_idxs = None
+                    else:
+                        flow = "target_to_source"  # required to have sorted dst indices
+                        supernode_idxs = ctx["supernode_idxs"].to(self.model.device, non_blocking=True)
+                    mesh_edges = radius_graph(
+                        x=mesh_pos,
+                        r=self.trainer.radius_graph_r,
+                        max_num_neighbors=self.trainer.radius_graph_max_num_neighbors,
+                        batch=batch_idx,
+                        loop=True,
+                        flow=flow,
+                    )
+                    if supernode_idxs is not None:
+                        is_supernode_edge = torch.isin(mesh_edges[0], supernode_idxs)
+                        mesh_edges = mesh_edges[:, is_supernode_edge]
+                    mesh_edges = mesh_edges.T
             else:
                 assert self.trainer.radius_graph_r is None
                 assert self.trainer.radius_graph_max_num_neighbors is None
                 assert self.trainer.num_supernodes is None
                 mesh_edges = mesh_edges.to(self.model.device, non_blocking=True)
+
             data["mesh_edges"] = mesh_edges
             return data
 
         def forward(self, batch, reduction="mean"):
-            data = self.prepare(batch=batch)
+            with kp.profiler.profile("train.update.forward"):
+                # --------- prepare & unpack ----------
+                data = self.prepare(batch=batch)
+                x         = data.pop("x")
+                target    = data.pop("target")
+                batch_idx = data["batch_idx"]
+                batch_size = batch_idx.max() + 1
 
-            x = data.pop("x")
-            target = data.pop("target")
-            batch_idx = data["batch_idx"]
-            batch_size = batch_idx.max() + 1
+                outputs = {}
 
-            # forward pass
-            forward_kwargs = {}
-            if self.trainer.reconstruct_from_target:
-                forward_kwargs["target"] = target
-            model_outputs = self.model(
-                x,
-                **data,
-                **forward_kwargs,
-                detach_reconstructions=self.trainer.detach_reconstructions,
-                reconstruct_prev_x=self.trainer.reconstruct_prev_x_weight > 0,
-                reconstruct_dynamics=self.trainer.reconstruct_dynamics_weight > 0,
-            )
+                # --------- model forward (timed by block) ----------
+                with kp.profiler.profile("train.update.forward.model"):
+                    # conditioner
+                    if self.model.conditioner is not None:
+                        with kp.profiler.profile("train.update.forward.model.conditioner"):
+                            condition = self.model.conditioner(
+                                timestep=data["timestep"],
+                                velocity=data["velocity"]
+                            )
+                    else:
+                        condition = None
 
-            infos = {}
-            losses = {}
+                    # geometry_encoder currently unused (kept for completeness)
+                    static_tokens = None
+                    if self.model.geometry_encoder is not None:
+                        with kp.profiler.profile("train.update.forward.model.geometry_encoder"):
+                            static_tokens = self.model.geometry_encoder(data["geometry2d"])
+                        outputs["static_tokens"] = static_tokens
+                        raise NotImplementedError("static tokens are deprecated")
 
-            # next timestep loss
-            x_hat_loss = self.trainer.loss_function(
-                prediction=model_outputs["x_hat"],
-                target=target,
-                reduction="none",
-            )
-            infos.update(
-                {
-                    "loss_stats/x_hat/min": x_hat_loss.min(),
-                    "loss_stats/x_hat/max": x_hat_loss.max(),
-                    "loss_stats/x_hat/gt1": (x_hat_loss > 1).sum() / x_hat_loss.numel(),
-                    "loss_stats/x_hat/eq0": (x_hat_loss == 0).sum() / x_hat_loss.numel(),
-                }
-            )
-            # mask high values after some time to avoid instabilities
-            if self.trainer.mask_loss_start_checkpoint is not None:
-                if self.trainer.mask_loss_start_checkpoint > self.trainer.update_counter.cur_checkpoint:
-                    x_hat_loss_mask = x_hat_loss > self.trainer.mask_loss_threshold
-                    x_hat_loss = x_hat_loss[x_hat_loss_mask]
-                    infos["loss_stats/x_hat/gt_loss_threshold"] = x_hat_loss_mask.sum() / x_hat_loss_mask.numel()
-            if reduction == "mean":
-                losses["x_hat"] = x_hat_loss.mean()
-            elif reduction == "mean_per_sample":
-                _, ctx = batch
-                num_zero_pos = (data["query_pos"] == 0).sum()
-                assert num_zero_pos == 0, f"padded query_pos not supported {num_zero_pos}"
-                query_pos_len = data["query_pos"].size(1)
-                query_batch_idx = torch.arange(batch_size, device=self.model.device).repeat_interleave(query_pos_len)
-                #query_batch_idx = ctx["query_batch_idx"].to(self.model.device, non_blocking=True)
-                # indptr is a tensor of indices betweeen which to aggregate
-                # i.e. a tensor of [0, 2, 5] would result in [src[0] + src[1], src[2] + src[3] + src[4]]
-                indices, counts = query_batch_idx.unique(return_counts=True)
-                # first index has to be 0
-                padded_counts = torch.zeros(len(indices) + 1, device=counts.device, dtype=counts.dtype)
-                padded_counts[indices + 1] = counts
-                indptr = padded_counts.cumsum(dim=0)
-                losses["x_hat"] = segment_csr(src=x_hat_loss.mean(dim=1), indptr=indptr, reduce="mean")
-            else:
-                raise NotImplementedError
-            total_loss = losses["x_hat"]
+                    # encoder
+                    with kp.profiler.profile("train.update.forward.model.encoder"):
+                        prev_dynamics = self.model.encoder(
+                            x,
+                            mesh_pos=data["mesh_pos"],
+                            mesh_edges=data["mesh_edges"],
+                            batch_idx=batch_idx,
+                            condition=condition,
+                            static_tokens=static_tokens,
+                        )
+                    outputs["prev_dynamics"] = prev_dynamics
 
+                    # latent dynamics
+                    with kp.profiler.profile("train.update.forward.model.latent"):
+                        dynamics = self.model.latent(
+                            prev_dynamics,
+                            condition=condition,
+                            static_tokens=static_tokens,
+                        )
+                    outputs["dynamics"] = dynamics
 
-            # num_objects = self.to_device(item="num_objects", batch=batch[0], dataset_mode=self.trainer.dataset_mode),
-            # out = self.trainer.path_provider.stage_output_path / f"tensors"
-            # out.mkdir(exist_ok=True)
-            # torch.save(num_objects, out / f"{self.counter:04d}_numobjects.th")
-            # torch.save(x, out / f"{self.counter:04d}_x.th")
-            # torch.save(target, out / f"{self.counter:04d}_target.th")
-            # torch.save(data["timestep"], out / f"{self.counter:04d}_timestep.th")
-            # torch.save(data["velocity"], out / f"{self.counter:04d}_velocity.th")
-            # torch.save(data["query_pos"], out / f"{self.counter:04d}_querypos.th")
-            # torch.save(data["mesh_pos"], out / f"{self.counter:04d}_meshpos.th")
-            # torch.save(data["batch_idx"], out / f"{self.counter:04d}_batchidx.th")
-            # torch.save(data["mesh_edges"], out / f"{self.counter:04d}_meshedges.th")
-            # torch.save(model_outputs["x_hat"], out / f"{self.counter:04d}_xhat.th")
-            # self.counter += 1
+                    # decoder
+                    with kp.profiler.profile("train.update.forward.model.decoder"):
+                        if self.model.force_decoder_fp32:
+                            with torch.autocast(device_type=str(dynamics.device).split(":")[0], enabled=False):
+                                x_hat = self.model.decoder(
+                                    dynamics.float(),
+                                    query_pos=data["query_pos"].float(),
+                                    unbatch_idx=data["unbatch_idx"],
+                                    unbatch_select=data["unbatch_select"],
+                                    condition=condition.float() if condition is not None else None,
+                                )
+                        else:
+                            x_hat = self.model.decoder(
+                                dynamics,
+                                query_pos=data["query_pos"],
+                                unbatch_idx=data["unbatch_idx"],
+                                unbatch_select=data["unbatch_select"],
+                                condition=condition,
+                            )
+                    outputs["x_hat"] = x_hat
 
-            # input_reconstruction losses
-            if self.trainer.reconstruct_prev_x_weight > 0:
-                num_channels = model_outputs["prev_x_hat"].size(1)
-                prev_x_hat_loss = self.trainer.loss_function(
-                    prediction=model_outputs["prev_x_hat"],
-                    target=x[:, -num_channels:],
-                    reduction="none",
-                )
-                if reduction == "mean":
-                    # mask out reconstruction for timestep==0
-                    timestep = data["timestep"]
-                    timestep_per_point = torch.gather(timestep, dim=0, index=batch_idx)
-                    prev_x_hat_loss = prev_x_hat_loss[timestep_per_point != 0]
+                # --------- losses (timed) ----------
+                infos, losses = {}, {}
+
+                with kp.profiler.profile("train.update.forward.loss.next_timestep"):
+                    # COMPREHENSIVE DEBUG
+                    update_num = self.trainer.update_counter.cur_checkpoint.update
+                    if update_num <= 3 or update_num in [10, 50, 100, 200]:
+                        print(f"\n[TRAINER DEBUG] Update {update_num}, Epoch {self.trainer.update_counter.cur_checkpoint.epoch}")
+                        print(f"  x shape: {x.shape}, range: [{x.min():.6f}, {x.max():.6f}], mean={x.mean():.6f}, std={x.std():.6f}")
+                        print(f"  target shape: {target.shape}, range: [{target.min():.6f}, {target.max():.6f}], mean={target.mean():.6f}, std={target.std():.6f}")
+                        print(f"  x_hat shape: {outputs['x_hat'].shape}, range: [{outputs['x_hat'].min():.6f}, {outputs['x_hat'].max():.6f}], mean={outputs['x_hat'].mean():.6f}, std={outputs['x_hat'].std():.6f}")
+                        
+                        # Check per-channel target and prediction
+                        for ch in range(min(4, target.shape[-1])):
+                            t_ch = target[:, ch]
+                            p_ch = outputs['x_hat'][:, ch]
+                            print(f"  Ch{ch}: target mean={t_ch.mean():.6f}, std={t_ch.std():.6f} | pred mean={p_ch.mean():.6f}, std={p_ch.std():.6f}")
+                    
+                    x_hat_loss = self.trainer.loss_function(
+                        prediction=outputs["x_hat"],
+                        target=target,
+                        reduction="none",
+                    )
+                    
+                    if update_num <= 3 or update_num in [10, 50, 100, 200]:
+                        print(f"  x_hat_loss (per-element): range=[{x_hat_loss.min():.6f}, {x_hat_loss.max():.6f}], mean={x_hat_loss.mean():.6f}")
+                        print(f"  MSE per channel: {[(outputs['x_hat'][:, i] - target[:, i]).pow(2).mean().item() for i in range(min(4, target.shape[-1]))]}")
+                    
+                    # Calculate relative errors (normalized by target RMS for numerical stability)
+                    target_rms = torch.sqrt((target ** 2).mean() + 1e-16)
+                    rel_l1_error = (outputs["x_hat"] - target).abs() / (target_rms + 1e-8)
+                    rel_l2_error = ((outputs["x_hat"] - target) ** 2) / ((target_rms + 1e-8) ** 2)  # Per-element squared error
+                    
+                    infos.update({
+                        "loss_stats/x_hat/min": x_hat_loss.min(),
+                        "loss_stats/x_hat/max": x_hat_loss.max(),
+                        "loss_stats/x_hat/gt1": (x_hat_loss > 1).sum() / x_hat_loss.numel(),
+                        "loss_stats/x_hat/eq0": (x_hat_loss == 0).sum() / x_hat_loss.numel(),
+                        "rel_l1_error": rel_l1_error.mean(),
+                        "rel_l2_error": torch.sqrt(rel_l2_error.mean()),
+                    })
                     if self.trainer.mask_loss_start_checkpoint is not None:
                         if self.trainer.mask_loss_start_checkpoint > self.trainer.update_counter.cur_checkpoint:
-                            prev_x_hat_loss_mask = prev_x_hat_loss > self.trainer.mask_loss_threshold
-                            prev_x_hat_loss = prev_x_hat_loss[prev_x_hat_loss_mask]
-                            infos["loss_stats/prev_x_hat/gt_loss_threshold"] = \
-                                prev_x_hat_loss_mask.sum() / prev_x_hat_loss_mask.numel()
-                    prev_x_hat_loss = prev_x_hat_loss.mean()
-                elif reduction == "mean_per_sample":
-                    raise NotImplementedError
-                    # prev_x_hat_loss = prev_x_hat_loss.flatten(start_dim=1).mean(dim=1)
-                    # # set loss for timestep==0 to 0
-                    # prev_x_hat_loss[is_timestep0] = 0.
-                else:
-                    raise NotImplementedError
-                losses["prev_x_hat"] = prev_x_hat_loss
-                total_loss = total_loss + self.trainer.reconstruct_prev_x_weight * prev_x_hat_loss
+                            mask = x_hat_loss > self.trainer.mask_loss_threshold
+                            x_hat_loss = x_hat_loss[mask]
+                            infos["loss_stats/x_hat/gt_loss_threshold"] = mask.sum() / mask.numel()
 
-            # dynamics reconstruction losses
-            if self.trainer.reconstruct_dynamics_weight > 0:
-                dynamics_hat_loss = self.trainer.loss_function(
-                    prediction=model_outputs["dynamics_hat"],
-                    target=model_outputs["dynamics"],
-                    reduction="none",
-                )
-                max_timestep = self.model.conditioner.num_total_timesteps - 1
-                timestep = data["timestep"]
-                if reduction == "mean":
-                    # mask out reconstruction for timestep==T
-                    dynamics_hat_mask = timestep != max_timestep
-                    if dynamics_hat_mask.sum() > 0:
-                        dynamics_hat_loss = dynamics_hat_loss[dynamics_hat_mask].mean()
+                    if reduction == "mean":
+                        losses["x_hat"] = x_hat_loss.mean()
+                        losses["rel_l1"] = rel_l1_error.mean()
+                        losses["rel_l2"] = torch.sqrt(rel_l2_error.mean().clamp(min=0.0))
+                    elif reduction == "mean_per_sample":
+                        qlen = data["query_pos"].size(1)
+                        qbatch = torch.arange(batch_size, device=self.model.device).repeat_interleave(qlen)
+                        indices, counts = qbatch.unique(return_counts=True)
+                        padded_counts = torch.zeros(len(indices) + 1, device=counts.device, dtype=counts.dtype)
+                        padded_counts[indices + 1] = counts
+                        indptr = padded_counts.cumsum(dim=0)
+                        losses["x_hat"] = segment_csr(src=x_hat_loss.mean(dim=1), indptr=indptr, reduce="mean")
+                        losses["rel_l1"] = segment_csr(src=rel_l1_error.mean(dim=1), indptr=indptr, reduce="mean")
+                        losses["rel_l2"] = torch.sqrt(segment_csr(src=rel_l2_error.mean(dim=1), indptr=indptr, reduce="mean").clamp(min=0.0))
                     else:
-                        dynamics_hat_loss = tc.zeros(size=(1,), device=timestep.device)
-                elif reduction == "mean_per_sample":
-                    # set loss for timestep==0 to 0
-                    dynamics_hat_loss[timestep == max_timestep] = 0.
-                    # average per sample
-                    dynamics_hat_loss = dynamics_hat_loss.flatten(start_dim=1).mean(dim=1)
+                        raise NotImplementedError
+
+                total_loss = losses["x_hat"]
+
+                # --------- optional reconstructions (timed) ----------
+                if self.trainer.reconstruct_prev_x_weight > 0:
+                    with kp.profiler.profile("train.update.forward.loss.reconstruct_prev_x"):
+                        if self.model.force_decoder_fp32:
+                            with torch.autocast(device_type=str(x.device).split(":")[0], enabled=False):
+                                prev_x_hat = self.model.decoder(
+                                    outputs["prev_dynamics"].detach().float() if self.trainer.detach_reconstructions else outputs["prev_dynamics"].float(),
+                                    query_pos=data["query_pos"].float(),
+                                    unbatch_idx=data["unbatch_idx"],
+                                    unbatch_select=data["unbatch_select"],
+                                    condition=None if condition is None else condition.float(),
+                                )
+                        else:
+                            prev_x_hat = self.model.decoder(
+                                outputs["prev_dynamics"].detach() if self.trainer.detach_reconstructions else outputs["prev_dynamics"],
+                                query_pos=data["query_pos"],
+                                unbatch_idx=data["unbatch_idx"],
+                                unbatch_select=data["unbatch_select"],
+                                condition=condition,
+                            )
+                        outputs["prev_x_hat"] = prev_x_hat
+
+                        prev_x_hat_loss = self.trainer.loss_function(
+                            prediction=prev_x_hat,
+                            target=x[:, -prev_x_hat.size(1):],
+                            reduction="none",
+                        )
+                        if reduction == "mean":
+                            timestep = data["timestep"]
+                            timestep_per_point = torch.gather(timestep, dim=0, index=batch_idx)
+                            prev_x_hat_loss = prev_x_hat_loss[timestep_per_point != 0]
+                            if self.trainer.mask_loss_start_checkpoint is not None:
+                                if self.trainer.mask_loss_start_checkpoint > self.trainer.update_counter.cur_checkpoint:
+                                    mask = prev_x_hat_loss > self.trainer.mask_loss_threshold
+                                    prev_x_hat_loss = prev_x_hat_loss[mask]
+                                    infos["loss_stats/prev_x_hat/gt_loss_threshold"] = mask.sum() / mask.numel()
+                            prev_x_hat_loss = prev_x_hat_loss.mean()
+                        elif reduction == "mean_per_sample":
+                            raise NotImplementedError
+                        else:
+                            raise NotImplementedError
+
+                        losses["prev_x_hat"] = prev_x_hat_loss
+                        total_loss = total_loss + self.trainer.reconstruct_prev_x_weight * prev_x_hat_loss
+
+                if self.trainer.reconstruct_dynamics_weight > 0:
+                    with kp.profiler.profile("train.update.forward.loss.reconstruct_dynamics"):
+                        max_t = self.model.conditioner.num_total_timesteps - 1
+                        timestep = data["timestep"]
+                        next_t = torch.clamp_max(timestep + 1, max=max_t)
+                        next_condition = self.model.conditioner(timestep=next_t, velocity=data["velocity"])
+
+                        # teacher-forcing when target is available
+                        x_hat_or_gt = target
+                        if x_hat_or_gt is None:
+                            x_hat_or_gt = outputs["x_hat"]
+                            if self.trainer.detach_reconstructions:
+                                x_hat_or_gt = x_hat_or_gt.detach()
+
+                        num_out_ch = outputs["x_hat"].size(1)
+                        with kp.profiler.profile("train.update.forward.loss.reconstruct_dynamics.encode"):
+                            dynamics_hat = self.model.encoder(
+                                torch.concat([x[:, num_out_ch:], x_hat_or_gt], dim=1),
+                                mesh_pos=data["mesh_pos"],
+                                mesh_edges=data["mesh_edges"],
+                                batch_idx=batch_idx,
+                                condition=next_condition,
+                            )
+                        outputs["dynamics_hat"] = dynamics_hat
+
+                        dynamics_hat_loss = self.trainer.loss_function(
+                            prediction=dynamics_hat,
+                            target=outputs["dynamics"],
+                            reduction="none",
+                        )
+                        if reduction == "mean":
+                            mask = timestep != max_t
+                            if mask.sum() > 0:
+                                dynamics_hat_loss = dynamics_hat_loss[mask].mean()
+                            else:
+                                dynamics_hat_loss = torch.zeros(size=(1,), device=timestep.device)
+                        elif reduction == "mean_per_sample":
+                            dynamics_hat_loss[timestep == max_t] = 0.
+                            dynamics_hat_loss = dynamics_hat_loss.flatten(start_dim=1).mean(dim=1)
+                        else:
+                            raise NotImplementedError
+
+                        losses["dynamics_hat"] = dynamics_hat_loss
+                        total_loss = total_loss + self.trainer.reconstruct_dynamics_weight * dynamics_hat_loss
+
+                # ---- graph degree (cheap)
+                if self.trainer.num_supernodes is None:
+                    degree_input = len(data["mesh_edges"]) / len(x)
                 else:
-                    raise NotImplementedError
-                losses["dynamics_hat"] = dynamics_hat_loss
-                total_loss = total_loss + self.trainer.reconstruct_dynamics_weight * dynamics_hat_loss
+                    degree_input = len(data["mesh_edges"]) / (self.trainer.num_supernodes * (batch_size))
+                infos["degree/input"] = degree_input
 
-            infos.update(
-                {
-                    # "tensor_stats/x/absmax": x.abs().max(),
-                    # "tensor_stats/x/absmin": x.abs().max(),
-                    # "tensor_stats/x/mean": x.mean(),
-                    # "tensor_stats/x/absmean": x.abs().mean(),
-                    # "tensor_stats/x/std": x.std(),
-                    # "tensor_stats/target/absmax": target.abs().max(),
-                    # "tensor_stats/target/absmin": target.abs().max(),
-                    # "tensor_stats/target/mean": target.mean(),
-                    # "tensor_stats/target/absmean": target.abs().mean(),
-                    # "tensor_stats/target/std": target.std(),
-                    # "tensor_stats/timestep/max": data["timestep"].max(),
-                    # "tensor_stats/timestep/min": data["timestep"].min(),
-                    # "tensor_stats/timestep/mean": data["timestep"].float().mean(),
-                    # "tensor_stats/timestep/std": data["timestep"].float().std(),
-                    # "tensor_stats/velocity/max": data["velocity"].max(),
-                    # "tensor_stats/velocity/min": data["velocity"].min(),
-                    # "tensor_stats/velocity/mean": data["velocity"].float().mean(),
-                    # "tensor_stats/velocity/std": data["velocity"].float().std(),
-                    # "tensor_stats/x_hat/absmax": model_outputs["x_hat"].abs().max(),
-                    # "tensor_stats/x_hat/absmin": model_outputs["x_hat"].abs().min(),
-                    # "tensor_stats/x_hat/mean": model_outputs["x_hat"].mean(),
-                    # "tensor_stats/x_hat/absmean": model_outputs["x_hat"].abs().mean(),
-                    # "tensor_stats/x_hat/std": model_outputs["x_hat"].abs().std(),
-                },
-            )
-            # calculate degree of graph (average number of connections p)
-            # TODO: degree is incorrectly calculated if num_supernodes is handled by dataset and not by collator
-            if self.trainer.num_supernodes is None:
-                infos["degree/input"] = len(data["mesh_edges"]) / len(x)
-            else:
-                infos["degree/input"] = len(data["mesh_edges"]) / (self.trainer.num_supernodes * batch_size)
-
-            return dict(total=total_loss, **losses), infos
+                return dict(total=total_loss, **losses), infos

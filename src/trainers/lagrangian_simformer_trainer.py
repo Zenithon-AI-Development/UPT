@@ -101,21 +101,27 @@ class LagrangianSimformerTrainer(SgdTrainer):
             curr_pos_full = ModeWrapper.get_item(mode=self.trainer.dataset_mode, item="curr_pos_full", batch=batch)
             curr_pos_full = curr_pos_full.to(self.model.device, non_blocking=True)
             prev_pos = ModeWrapper.get_item(mode=self.trainer.dataset_mode, item="prev_pos", batch=batch)
-            prev_pos = prev_pos.to(self.model.device, non_blocking=True)
+            if prev_pos is not None:
+                prev_pos = prev_pos.to(self.model.device, non_blocking=True)
             prev_acc = ModeWrapper.get_item(mode=self.trainer.dataset_mode, item="prev_acc", batch=batch)
-            prev_acc = prev_acc.to(self.model.device, non_blocking=True)
+            if prev_acc is not None:
+                prev_acc = prev_acc.to(self.model.device, non_blocking=True)
             edge_index = ModeWrapper.get_item(mode=self.trainer.dataset_mode, item="edge_index", batch=batch)
-            edge_index = edge_index.to(self.model.device, non_blocking=True)
+            if edge_index is not None:
+                edge_index = edge_index.to(self.model.device, non_blocking=True)
             batch_idx = ctx["batch_idx"].to(self.model.device, non_blocking=True)
             unbatch_idx = ctx["unbatch_idx"].to(self.model.device, non_blocking=True)
             unbatch_select = ctx["unbatch_select"].to(self.model.device, non_blocking=True)
 
             target_pos_encode = ModeWrapper.get_item(mode=self.trainer.dataset_mode, item="target_pos_encode", batch=batch)
-            target_pos_encode = target_pos_encode.to(self.model.device, non_blocking=True)
+            if target_pos_encode is not None:
+                target_pos_encode = target_pos_encode.to(self.model.device, non_blocking=True)
             perm = ModeWrapper.get_item(mode=self.trainer.dataset_mode, item="perm", batch=batch)
-            perm = perm.to(self.model.device, non_blocking=True)
+            if perm is not None:
+                perm = perm.to(self.model.device, non_blocking=True)
             edge_index_target = ModeWrapper.get_item(mode=self.trainer.dataset_mode, item="edge_index_target", batch=batch)
-            edge_index_target = edge_index_target.to(self.model.device, non_blocking=True)
+            if edge_index_target is not None:
+                edge_index_target = edge_index_target.to(self.model.device, non_blocking=True)
 
             # Flatten input
             x = einops.rearrange(
@@ -131,10 +137,11 @@ class LagrangianSimformerTrainer(SgdTrainer):
                 target_vel,
                 "bs n_particles n_dim -> (bs n_particles) n_dim",
             )
-            prev_acc = einops.rearrange(
-                prev_acc,
-                "bs n_particles n_dim -> (bs n_particles) n_dim",
-            )
+            if prev_acc is not None:
+                prev_acc = einops.rearrange(
+                    prev_acc,
+                    "bs n_particles n_dim -> (bs n_particles) n_dim",
+                )
 
             # forward pass
             model_outputs = self.model(
@@ -160,12 +167,36 @@ class LagrangianSimformerTrainer(SgdTrainer):
                 target = target_acc
 
             # next timestep loss
+            target_loss = self.trainer.loss_function(
+                prediction=model_outputs["target"],
+                target=target,
+                reduction="none",
+            )
+            
+            # Calculate relative errors (normalized by target RMS for numerical stability)
+            # For a batch, compute per-sample RMS normalization
+            if reduction == "mean":
+                target_rms = torch.sqrt((target ** 2).mean()) + 1e-8
+                error_l1 = (model_outputs["target"] - target).abs().mean()
+                error_l2 = torch.sqrt(((model_outputs["target"] - target) ** 2).mean())
+                rel_l1_reduced = error_l1 / target_rms
+                rel_l2_reduced = error_l2 / target_rms
+                target_loss_reduced = target_loss.mean()
+            elif reduction == "mean_per_sample":
+                # Per-sample normalization
+                target_rms = torch.sqrt((target ** 2).flatten(start_dim=1).mean(dim=1, keepdim=True)) + 1e-8  # (B, 1)
+                error_l1 = (model_outputs["target"] - target).abs().flatten(start_dim=1).mean(dim=1)  # (B,)
+                error_l2 = torch.sqrt(((model_outputs["target"] - target) ** 2).flatten(start_dim=1).mean(dim=1))  # (B,)
+                rel_l1_reduced = error_l1 / target_rms.squeeze()
+                rel_l2_reduced = error_l2 / target_rms.squeeze()
+                target_loss_reduced = target_loss.flatten(start_dim=1).mean(dim=1)
+            else:
+                raise NotImplementedError
+            
             losses = dict(
-                target=self.trainer.loss_function(
-                    prediction=model_outputs["target"],
-                    target=target,
-                    reduction=reduction,
-                ),
+                target=target_loss_reduced,
+                rel_l1=rel_l1_reduced,
+                rel_l2=rel_l2_reduced,
             )
             # input_reconstruction losses
             if "prev_target" in model_outputs:

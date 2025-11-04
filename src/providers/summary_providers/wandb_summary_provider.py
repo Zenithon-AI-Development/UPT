@@ -35,6 +35,6 @@ class WandbSummaryProvider(SummaryProviderBase):
 
     def summarize_logvalues(self):
         minmax_dict = self.primitive_summary_provider.summarize_logvalues()
-        self.logger.info(f"pushing summarized logvalues to wandb")
+        # self.logger.info(f"pushing summarized logvalues to wandb")
         if minmax_dict is not None:
             wandb.run.summary.update(minmax_dict)

@@ -1,0 +1,132 @@
+# Same as amr.yaml but triggers rollout every 1 epoch for quick evaluation
+wandb: upt_amr_test
+name: amr64-lagrangian
+stage_name: stage1
+vars:
+  lr: 5.0e-5
+  batch_size: 16
+  max_batch_size: 16
+  epochs: 23  # Just run 1 more epoch from checkpoint
+  model_dim: 256
+  num_latent_tokens: 256
+  n_input_timesteps: 4
+  graph:
+    mode: radius_graph_with_supernodes
+    r: 0.1
+    max_neighbors: 32
+    n_supernodes: 2048
+
+  optim:
+    kind: lion
+    lr: ${vars.lr}
+    weight_decay: 0.5
+
+datasets:
+  train:
+    kind: amr_pointcloud_dataset
+    root: /home/workspace/projects/data/DEMO_mixed
+    split: train
+    n_input_timesteps: ${vars.n_input_timesteps}
+    graph_mode: ${vars.graph.mode}
+    radius_graph_r: ${vars.graph.r}
+    radius_graph_max_num_neighbors: ${vars.graph.max_neighbors}
+    n_supernodes: ${vars.graph.n_supernodes}
+    num_points_range: [2048, 2048]
+    collators:
+      - kind: lagrangian_simformer_collator
+
+  valid_rollout:
+    kind: amr_pointcloud_dataset
+    root: /home/workspace/projects/data/DEMO_mixed
+    split: valid
+    test_mode: full_traj
+    n_input_timesteps: ${vars.n_input_timesteps}
+    graph_mode: ${vars.graph.mode}
+    radius_graph_r: ${vars.graph.r}
+    radius_graph_max_num_neighbors: ${vars.graph.max_neighbors}
+    n_supernodes: ${vars.graph.n_supernodes}
+    collators:
+      - kind: lagrangian_simformer_collator
+
+  test_rollout:
+    kind: amr_pointcloud_dataset
+    root: /home/workspace/projects/data/DEMO_mixed
+    split: test
+    test_mode: full_traj
+    n_input_timesteps: ${vars.n_input_timesteps}
+    graph_mode: ${vars.graph.mode}
+    radius_graph_r: ${vars.graph.r}
+    radius_graph_max_num_neighbors: ${vars.graph.max_neighbors}
+    n_supernodes: ${vars.graph.n_supernodes}
+    collators:
+      - kind: lagrangian_simformer_collator
+
+model:
+  kind: lagrangian_simformer_model
+  conditioner:
+    kind: conditioners.timestep_conditioner_pdearena
+    kwargs: ${select:tiny:${yaml:models/timestep_embed}}
+    optim: ${vars.optim}
+    initializers:
+      - kind: previous_run_initializer
+        stage_name: stage1
+        stage_id: 5pk8czek
+        model_name: lagrangian_simformer_model.conditioner_encoder
+        checkpoint: best_model.loss.online.total.E1
+  encoder:
+    kind: encoders.lagrangian_pool_transformer_perceiver
+    num_latent_tokens: ${vars.num_latent_tokens}
+    enc_depth: 4
+    kwargs: ${select:dim96to192:${yaml:models/encoders/pool_transformer_perceiver}}
+    optim: ${vars.optim}
+    initializers:
+      - kind: previous_run_initializer
+        stage_name: stage1
+        stage_id: 5pk8czek
+        model_name: lagrangian_simformer_model.encoder
+        checkpoint: best_model.loss.online.total.E1
+  latent:
+    kind: latent.transformer_model
+    depth: 4
+    kwargs: ${select:dim192:${yaml:models/latent/transformer}}
+    optim: ${vars.optim}
+    initializers:
+      - kind: previous_run_initializer
+        stage_name: stage1
+        stage_id: 5pk8czek
+        model_name: lagrangian_simformer_model.latent
+        checkpoint: best_model.loss.online.total.E1
+  decoder:
+    kind: decoders.lagrangian_perceiver
+    kwargs: ${select:dim192:${yaml:models/decoders/perceiver}}
+    optim: ${vars.optim}
+    initializers:
+      - kind: previous_run_initializer
+        stage_name: stage1
+        stage_id: 5pk8czek
+        model_name: lagrangian_simformer_model.decoder
+        checkpoint: best_model.loss.online.total.E1
+
+trainer:
+  kind: lagrangian_large_t_simformer_trainer
+  precision: bfloat16
+  backup_precision: float16
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: mse_loss
+  log_every_n_epochs: 1
+  callbacks:
+    - kind: offline_lagrangian_large_t_rollout_mesh_loss_callback
+      every_n_epochs: 1  # Run rollout every epoch now
+      num_rollout_timesteps: 64  # Shorter for speed
+      dataset_key: test_rollout
+      batch_size: 128
+    - kind: offline_lagrangian_large_t_rollout_mesh_loss_callback
+      every_n_epochs: 1  # Run rollout every epoch now
+      num_rollout_timesteps: 64  # Shorter for speed
+      dataset_key: valid_rollout
+      batch_size: 128

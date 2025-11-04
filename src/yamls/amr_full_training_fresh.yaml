@@ -1,0 +1,107 @@
+wandb: cvsim
+name: amr-full-zpinch-fresh
+stage_name: stage1
+vars:
+  lr: 1.0e-3
+  batch_size: 32
+  max_batch_size: 8
+  epochs: 1000
+
+  optim:
+    kind: adamw
+    lr: ${vars.lr}
+    weight_decay: 1.0e-5
+
+datasets:
+  train:
+    kind: amr_dataset
+    name: zpinch
+    split: train
+    n_input_timesteps: 3
+    n_pushforward_timesteps: 0
+    graph_mode: radius_graph_with_supernodes
+    radius_graph_r: 0.05
+    radius_graph_max_num_neighbors: 8
+    n_supernodes: 128
+    num_points_range: [ 1000, 3000 ]
+    pos_scale: 1.0
+    predict_fields: true
+    collators:
+      - kind: amr_simformer_collator
+
+  valid:
+    kind: amr_dataset
+    name: zpinch
+    split: valid
+    n_input_timesteps: 3
+    n_pushforward_timesteps: 0
+    graph_mode: radius_graph_with_supernodes
+    radius_graph_r: 0.05
+    radius_graph_max_num_neighbors: 8
+    n_supernodes: 128
+    seed: 42
+    collators:
+      - kind: amr_simformer_collator
+
+  test:
+    kind: amr_dataset
+    name: zpinch
+    split: test
+    n_input_timesteps: 3
+    n_pushforward_timesteps: 0
+    graph_mode: radius_graph_with_supernodes
+    radius_graph_r: 0.05
+    radius_graph_max_num_neighbors: 8
+    n_supernodes: 128
+    seed: 42
+    collators:
+      - kind: amr_simformer_collator
+
+model:
+  kind: lagrangian_simformer_model
+  conditioner:
+    kind: conditioners.timestep_conditioner_pdearena
+    kwargs: ${select:tiny:${yaml:models/timestep_embed}}
+    optim: ${vars.optim}
+  encoder:
+    kind: encoders.lagrangian_pool_transformer_perceiver
+    num_latent_tokens: 64
+    enc_depth: 2
+    kwargs: ${select:dim96to192:${yaml:models/encoders/pool_transformer_perceiver}}
+    optim: ${vars.optim}
+  latent:
+    kind: latent.transformer_model
+    depth: 2
+    kwargs: ${select:dim192:${yaml:models/latent/transformer}}
+    optim: ${vars.optim}
+  decoder:
+    kind: decoders.lagrangian_perceiver
+    kwargs: ${select:dim192:${yaml:models/decoders/perceiver}}
+    optim: ${vars.optim}
+
+trainer:
+  kind: lagrangian_simformer_trainer
+  precision: float32
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  # NO initializer - training from scratch!
+  forward_kwargs:
+    predict_velocity: false
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: mse_loss
+  log_every_n_epochs: 1
+  callbacks:
+    - kind: offline_loss_callback
+      every_n_epochs: 5
+      dataset_key: valid
+    - kind: offline_loss_callback
+      every_n_epochs: 5
+      dataset_key: test
+    - kind: checkpoint_callback
+      every_n_epochs: 10
+      save_weights: true
+      save_optim: true
+

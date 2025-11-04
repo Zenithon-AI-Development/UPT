@@ -25,7 +25,7 @@ class ResumeInitializer(CheckpointInitializer):
     def _init_weights(self, name, model):
         if isinstance(model, SingleModelBase):
             model_name, ckpt_uri = self._get_modelname_and_ckpturi(model=model, model_name=name, file_type="model")
-            sd = torch.load(ckpt_uri, map_location=model.device)
+            sd = torch.load(ckpt_uri, map_location=model.device, weights_only=False)
             if "state_dict" in sd:
                 sd = sd["state_dict"]
             model.load_state_dict(sd)
@@ -52,7 +52,7 @@ class ResumeInitializer(CheckpointInitializer):
                 )
             else:
                 model_name, ckpt_uri = self._get_modelname_and_ckpturi(model=model, model_name=name, file_type="optim")
-                sd = torch.load(ckpt_uri, map_location=model.device)
+                sd = torch.load(ckpt_uri, map_location=model.device, weights_only=False)
                 model.optim.load_state_dict(sd)
                 self.logger.info(f"loaded optimizer of {model_name} from {ckpt_uri}")
         if isinstance(model, CompositeModelBase):
@@ -66,7 +66,7 @@ class ResumeInitializer(CheckpointInitializer):
         if isinstance(self.checkpoint, str):
             trainer_ckpt_uri = self._get_trainer_ckpt_file()
             if trainer_ckpt_uri.exists():
-                trainer_ckpt = torch.load(trainer_ckpt_uri)
+                trainer_ckpt = torch.load(trainer_ckpt_uri, weights_only=False)
                 trainer_ckpt_without_rng_states = {k: v for k, v in trainer_ckpt.items() if k != "random_states"}
                 self.logger.info(f"loaded checkpoint from trainer_state_dict: {trainer_ckpt_without_rng_states}")
                 return Checkpoint(
@@ -92,7 +92,7 @@ class ResumeInitializer(CheckpointInitializer):
                     f"no trainer checkpoint found but start_checkpoint "
                     f"can be inferred from model checkpoint '{fname}'"
                 )
-                model_sd = torch.load(ckpt_folder / fname, map_location="cpu")
+                model_sd = torch.load(ckpt_folder / fname, map_location="cpu", weights_only=False)
                 abs_ckpt = model_sd["abs_ckpt"]
                 assert isinstance(abs_ckpt, dict)
                 return Checkpoint(**abs_ckpt)
@@ -110,5 +110,5 @@ class ResumeInitializer(CheckpointInitializer):
         if not ckpt_uri.exists():
             self.logger.warning(f"no trainer checkpoint found -> skip trainer initialization from checkpoint")
             return
-        trainer.load_state_dict(torch.load(ckpt_uri), load_random_states=self.load_random_states)
+        trainer.load_state_dict(torch.load(ckpt_uri, weights_only=False), load_random_states=self.load_random_states)
         self.logger.info(f"loaded trainer checkpoint {ckpt_uri}")

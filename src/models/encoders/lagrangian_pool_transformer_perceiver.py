@@ -43,7 +43,7 @@ class LagrangianPoolTransformerPerceiver(SingleModelBase):
         self.gnn_init_weights = gnn_init_weights
 
         # input_shape is (None, input_dim)
-        input_dim, _ = self.input_shape
+        _, input_dim = self.input_shape
         ndim = self.data_container.get_dataset().metadata["dim"]
         if positional_std is not None:
             self.mesh_embed = CfdPoolGaussianSincosPos(

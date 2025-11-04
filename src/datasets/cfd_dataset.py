@@ -571,10 +571,10 @@ class CfdDataset(DatasetBase):
         # x in [-0.5, 0.5] y in [-0.5, 1]
         x.sub_(self.sim_x_pos_min).mul_(self.pos_scale)
         y.sub_(self.sim_y_pos_min).mul_(self.pos_scale)
-        assert torch.all(0 <= x), f"error in {sim_name} x.min={x.min().item()}"
-        assert torch.all(x < self.max_x_pos), f"error in {sim_name} y.max={x.max().item()}"
-        assert torch.all(0 <= y), f"error in {sim_name} y.min={y.min().item()}"
-        assert torch.all(y < self.max_y_pos), f"error in {sim_name} y.max={y.max().item()}"
+        assert torch.all(0 <= x), f"error in {case_uri.name} x.min={x.min().item()}"
+        assert torch.all(x <= self.max_x_pos), f"error in {case_uri.name} x.max={x.max().item()}"
+        assert torch.all(0 <= y), f"error in {case_uri.name} y.min={y.min().item()}"
+        assert torch.all(y <= self.max_y_pos), f"error in {case_uri.name} y.max={y.max().item()}"
         # stack
         all_pos = torch.stack([x, y], dim=1)
         return all_pos

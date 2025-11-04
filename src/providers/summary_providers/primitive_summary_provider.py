@@ -77,7 +77,7 @@ class PrimitiveSummaryProvider(SummaryProviderBase):
                 minmax_value = min(values)
             self[minmax_key] = minmax_value
             summary[minmax_key] = minmax_value
-            self.logger.info(f"{minmax_key}: {minmax_value}")
+            # self.logger.info(f"{minmax_key}: {minmax_value}")
             # last10/last50
             for running_avg_count in [10, 50]:
                 running_avg = float(np.mean(values[-running_avg_count:]))

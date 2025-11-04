@@ -265,7 +265,7 @@ class SgdTrainer(nn.Module):
             default_callbacks += [
                 ProgressCallback(**default_kwargs, **default_intervals),
                 TrainTimeCallback(**default_kwargs, **default_intervals),
-                OnlineLossCallback(**default_kwargs, **default_intervals, verbose=True),
+                OnlineLossCallback(**default_kwargs, **default_intervals, verbose=False),
             ]
 
             # EtaCallback is pointless in managed runs

@@ -1,14 +1,52 @@
+# Cleanup and setup scripts - do not push
+CLEANUP_NOTES.md
+PUSH_TO_GITHUB.sh
+*.md.backup
+*.txt.backup
+
+# Continuous attention experimental folder - do not push
+cont_attention/
+
+# Debug and test scripts - do not push
+debug_*.py
+test_*.py
+*_debug.py
+check_overfitting_results.py
+verify_*.py
+inspect_*.py
+investigate_*.py
+
+# Vendored dependencies - do not push (use requirements.txt instead)
+src/pytorch_scatter/
+src/pytorch_sparse/
+src/the_well/
+
+# Tutorial has its own git repo
+upt-tutorial/
+
+# Images and visualizations
 *.png
 *.svg
 *.gif
 *.pdf
+*.jpg
+*.jpeg
+*.mp4
+*.avi
+*.mov
+
+# Wandb and experiment tracking
+wandb/
+wandb_configs/
+*.wandb
+
+# Experiment outputs
 yamls_run*/
 yamls_search_outputs/
 yamls_flat/
 
-
+# Cluster/compute specific
 temp/
-wandb_configs/
 submit/
 sbatch/
 scratchpad*
@@ -19,14 +57,38 @@ static_config.yaml
 wandb_config*.yaml
 hyperparams*.yaml
 
+# Logs
 log*.txt
 log*.log
+*.log
 
+# IDE
 .idea
+.vscode/
 
 # draw.io
 *.dtmp
 *.bkp
+
+# Data directories (DO NOT PUSH LARGE DATA)
+data/
+checkpoints/
+benchmarking/
+results/
+outputs/
+save/
+EmptyCase/
+<TMPDIR>/
+test/
+
+# Model weights and large files
+*.pt
+*.pth
+*.ckpt
+*.h5
+*.hdf5
+*.pkl
+*.pickle
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -58,8 +120,6 @@ share/python-wheels/
 MANIFEST
 
 # PyInstaller
-#  Usually these files are written by a python script from a template
-#  before PyInstaller builds the exe, so as to inject date/other infos into it.
 *.manifest
 *.spec
 
@@ -85,17 +145,16 @@ coverage.xml
 *.mo
 *.pot
 
-# Django stuff:
-*.log
+# Django stuff
 local_settings.py
 db.sqlite3
 db.sqlite3-journal
 
-# Flask stuff:
+# Flask stuff
 instance/
 .webassets-cache
 
-# Scrapy stuff:
+# Scrapy stuff
 .scrapy
 
 # Sphinx documentation
@@ -115,13 +174,9 @@ ipython_config.py
 .python-version
 
 # pipenv
-#   According to pypa/pipenv#598, it is recommended to include Pipfile.lock in version control.
-#   However, in case of collaboration, if having platform-specific dependencies or dependencies
-#   having no cross-platform support, pipenv may install dependencies that don't work, or not
-#   install all needed dependencies.
 #Pipfile.lock
 
-# PEP 582; used by e.g. github.com/David-OConnor/pyflow
+# PEP 582
 __pypackages__/
 
 # Celery stuff

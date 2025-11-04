@@ -32,6 +32,70 @@ from utils.version_check import check_versions
 from utils.wandb_utils import init_wandb, finish_wandb
 
 
+import logging
+logging.getLogger().setLevel(logging.INFO)   # INFO or WARNING
+# optional: silence chatty libs
+for noisy in ["kappadata", "torch.distributed", "urllib3", "matplotlib"]:
+    logging.getLogger(noisy).setLevel(logging.ERROR)
+
+
+
+class _ProfilerDigestEveryNEpochs(CallbackBase):
+    """
+    Prints a short, ranked list of the top-N profiler nodes every N epochs.
+    Safe no-ops for the callback interface so the trainer won't error.
+    """
+    def __init__(self, every_n_epochs=10, root="train.update", top_n=12):
+        self.every_n_epochs = int(every_n_epochs)
+        self.root = str(root)
+        self.top_n = int(top_n)
+
+    # ---- no-ops the trainer expects ----
+    def before_training(self, **kwargs):  # trainer calls this; keep signature open
+        pass
+    def before_epoch(self, **kwargs):     # not used
+        pass
+    def before_update(self, **kwargs):    # not used
+        pass
+    def after_update(self, **kwargs):     # not used
+        pass
+    def after_training(self, **kwargs):   # not used
+        pass
+
+    def after_epoch(self, **kwargs):
+        # Trainer usually passes epoch and/or trainer; accept either
+        epoch = kwargs.get("epoch", None)
+        trainer = kwargs.get("trainer", None)
+        if epoch is None and hasattr(trainer, "update_counter"):
+            try:
+                epoch = int(trainer.update_counter.cur_epoch)
+            except Exception:
+                epoch = None
+        if epoch is None or epoch % self.every_n_epochs != 0:
+            return
+        self._log_profiler_digest()
+
+    def _log_profiler_digest(self):
+        try:
+            root_node = kp.profiler.get_node(self.root)
+        except AssertionError:
+            logging.warning(f"[profiler] no node '{self.root}' found")
+            return
+        flat = []
+        def _walk(node, prefix=""):
+            name = f"{prefix}{node.name}"
+            flat.append((name, node.total_time))
+            for child in node.children.values():
+                _walk(child, prefix + "  ")
+        _walk(root_node, "")
+        flat.sort(key=lambda x: x[1], reverse=True)
+        lines = [f"[profiler] top {self.top_n} nodes under '{self.root}':"]
+        for name, t in flat[: self.top_n]:
+            lines.append(f"  {t:8.3f}s  {name}")
+        # Use WARNING so it still prints even if you run with INFO suppressed
+        logging.warning("\n".join(lines))
+
+
 def train_stage(stage_hp: dict, static_config: StaticConfig, cli_args: CliArgs, device: str):
     # set environment variables
     for key, value in stage_hp.get("env", {}).items():
@@ -218,6 +282,35 @@ def train_stage(stage_hp: dict, static_config: StaticConfig, cli_args: CliArgs, 
             dataset_config_provider=dataset_config_provider,
             is_mindatarun=cli_args.testrun or cli_args.mindatarun,
         )
+    # (Optional) reduce console noise by removing the chatty ProgressCallback
+    trainer.callbacks = [c for c in trainer.callbacks if c.__class__.__name__ != "ProgressCallback"]
+
+    # Add the profiler digest callback (every 10 epochs; adjust to taste)
+    trainer.callbacks.append(_ProfilerDigestEveryNEpochs(
+        every_n_epochs=10,          # print every 10 epochs
+        root="train.update",        # subtree we timed in your forward()
+        top_n=12                    # how many hot spots to list
+    ))
+
+    try:
+        from callbacks.base.progress_callback import ProgressCallback
+    except Exception:
+        ProgressCallback = type("ProgressCallback", (), {})  # fallback if path differs
+
+    try:
+        from callbacks.online_callbacks.online_loss_callback import OnlineLossCallback
+    except Exception:
+        OnlineLossCallback = type("OnlineLossCallback", (), {})
+
+    # keep only epoch-level OnlineLossCallback; drop ProgressCallback and any per-update OnlineLossCallback
+    pruned = []
+    for cb in trainer.callbacks:
+        name = cb.__class__.__name__
+        is_progress = isinstance(cb, ProgressCallback) or name == "ProgressCallback"
+        is_online_per_update = isinstance(cb, OnlineLossCallback) and getattr(cb, "every_n_updates", None)
+        if not is_progress and not is_online_per_update:
+            pruned.append(cb)
+    trainer.callbacks = pruned
 
     # init model
     logging.info("------------------")
@@ -232,14 +325,29 @@ def train_stage(stage_hp: dict, static_config: StaticConfig, cli_args: CliArgs, 
             is_frozen=True,
         )
     else:
+        ds_train, coll_train = trainer.data_container.get_dataset("train", mode="x")
+        input_shape  = ds_train.getshape_x()         # e.g. (None, T_in * F)
+        output_shape = ds_train.getshape_target()    # e.g. (None, F)
+        try:
+            trainer.num_supernodes = getattr(coll_train.collator, "num_supernodes", None)
+        except Exception:
+            pass
         model = model_from_kwargs(
             **stage_hp["model"],
-            input_shape=trainer.input_shape,
-            output_shape=trainer.output_shape,
+            input_shape=input_shape,
+            output_shape=output_shape,
             update_counter=trainer.update_counter,
             path_provider=path_provider,
             data_container=data_container,
         )
+        # model = model_from_kwargs(
+        #     **stage_hp["model"],
+        #     input_shape=trainer.input_shape,
+        #     output_shape=trainer.output_shape,
+        #     update_counter=trainer.update_counter,
+        #     path_provider=path_provider,
+        #     data_container=data_container,
+        # )
     # logging.info(f"model architecture:\n{model}")
     # moved to trainer as initialization on cuda is different than on cpu
     # model = model.to(stage_config.run_config.device)
@@ -250,10 +358,34 @@ def train_stage(stage_hp: dict, static_config: StaticConfig, cli_args: CliArgs, 
     # finish callbacks
     CallbackBase.finish()
 
+    def _log_profiler_digest(top_n: int = 12, root: str = "train"):
+        try:
+            root_node = kp.profiler.get_node(root)
+        except AssertionError:
+            logging.info(f"[profiler] no node '{root}' found")
+            return
+        flat = []
+        def _walk(node, prefix=""):
+            name = f"{prefix}{node.name}"
+            flat.append((name, node.total_time))
+            for child in node.children.values():
+                _walk(child, prefix=prefix + "  ")
+        _walk(root_node, prefix="")
+        flat.sort(key=lambda x: x[1], reverse=True)
+        lines = [f"[profiler] top {top_n} nodes under '{root}':"]
+        for name, t in flat[:top_n]:
+            lines.append(f"  {t:8.3f}s  {name}")
+        logging.info("\n".join(lines))
+
     # summarize logvalues
     logging.info("------------------")
     logging.info(f"summarize logvalues")
     summary_provider.summarize_logvalues()
+
+    try:
+        _log_profiler_digest(top_n=12, root="train")
+    except Exception:
+        logging.exception("failed to compute profiler digest")
 
     # summarize stage
     if "stage_summarizers" in stage_hp and is_rank0():
@@ -295,6 +427,31 @@ def train_stage(stage_hp: dict, static_config: StaticConfig, cli_args: CliArgs, 
     summary_provider.flush()
     # log profiler times
     logging.info(f"full profiling times:\n{kp.profiler.to_string()}")
+
+    def _log_profiler_digest(top_n: int = 12, root: str = "train"):
+        """
+        Print a short, ranked list of the top-N nodes by total time under `root`.
+        """
+        try:
+            root_node = kp.profiler.get_node(root)
+        except AssertionError:
+            logging.info(f"[profiler] no node '{root}' found")
+            return
+
+        flat = []
+        def _walk(node, prefix=""):
+            name = f"{prefix}{node.name}"
+            flat.append((name, node.total_time))
+            for child in node.children.values():
+                _walk(child, prefix=prefix + "  ")
+        _walk(root_node, prefix="")
+
+        flat.sort(key=lambda x: x[1], reverse=True)
+        lines = [f"[profiler] top {top_n} nodes under '{root}':"]
+        for name, t in flat[:top_n]:
+            lines.append(f"  {t:8.3f}s  {name}")
+        logging.info("\n".join(lines))
+
     kp.reset()
 
     # execute commands

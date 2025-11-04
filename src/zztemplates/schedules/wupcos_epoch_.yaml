@@ -1,0 +1,13 @@
+vars:
+  end_epoch: ???        # e.g. 10 (you still set this from your main yaml)
+  end_value: 1.0e-6     # final LR multiplier after cosine
+
+schedule:
+  - schedule:
+      kind: linear_increasing_schedule
+      exclude_first: true
+      exclude_last: true
+    end_epoch: 10
+  - schedule:
+      kind: cosine_decreasing_schedule
+      exclude_last: true
