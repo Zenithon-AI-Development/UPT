@@ -1,4 +1,5 @@
 from functools import partial
+import time
 
 import torch
 from kappamodules.layers import LinearProjection
@@ -89,8 +90,11 @@ class CfdPoolTransformerPerceiver(SingleModelBase):
         return [ExcludeFromWdByNameModifier(name="perceiver.query")]
 
     def forward(self, x, mesh_pos, mesh_edges, batch_idx, condition=None, static_tokens=None):
+        timings = {}
         # embed mesh
+        start = time.perf_counter()
         x = self.mesh_embed(x, mesh_pos=mesh_pos, mesh_edges=mesh_edges, batch_idx=batch_idx)
+        timings["mesh_embed_ms"] = (time.perf_counter() - start) * 1000.0
 
         # project static_tokens to encoder dim
         # static_tokens = self.static_token_proj(static_tokens)
@@ -101,13 +105,30 @@ class CfdPoolTransformerPerceiver(SingleModelBase):
         block_kwargs = {}
         if condition is not None:
             block_kwargs["cond"] = condition
+        start = time.perf_counter()
         x = self.enc_norm(x)
+        timings["enc_norm_ms"] = (time.perf_counter() - start) * 1000.0
+
+        start = time.perf_counter()
         x = self.enc_proj(x)
+        timings["enc_proj_ms"] = (time.perf_counter() - start) * 1000.0
+
+        blocks_total = 0.0
         for blk in self.blocks:
+            start = time.perf_counter()
             x = blk(x, **block_kwargs)
+            blocks_total += (time.perf_counter() - start) * 1000.0
+        if self.blocks:
+            timings["transformer_blocks_ms"] = blocks_total
 
         # perceiver
+        start = time.perf_counter()
         x = self.perc_proj(x)
-        x = self.perceiver(kv=x, **block_kwargs)
+        timings["perc_proj_ms"] = (time.perf_counter() - start) * 1000.0
 
+        start = time.perf_counter()
+        x = self.perceiver(kv=x, **block_kwargs)
+        timings["perceiver_ms"] = (time.perf_counter() - start) * 1000.0
+
+        self._last_timings = timings
         return x

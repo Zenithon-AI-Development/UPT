@@ -1,0 +1,93 @@
+wandb: disabled
+name: amr-zpinch-overfit
+stage_name: amr_overfit
+vars:
+  lr: 5.0e-4
+  batch_size: 1
+  max_batch_size: 1
+  epochs: 100
+  num_supernodes: 256
+  radius_graph_r: 0.05
+  radius_graph_max_num_neighbors: 16
+  optim:
+    kind: adamw
+    lr: ${vars.lr}
+    weight_decay: 1.0e-5
+    lr_scaler:
+      kind: linear_lr_scaler
+      divisor: 1
+
+datasets:
+  train:
+    kind: amr_dataset
+    name: zpinch
+    split: train
+    n_input_timesteps: 3
+    n_pushforward_timesteps: 0
+    graph_mode: radius_graph_with_supernodes
+    radius_graph_r: ${vars.radius_graph_r}
+    radius_graph_max_num_neighbors: ${vars.radius_graph_max_num_neighbors}
+    n_supernodes: ${vars.num_supernodes}
+    num_points_range: [1000, 3000]
+    pos_scale: 1.0
+    predict_fields: true
+    seed: 0
+    collators:
+      - kind: amr_simformer_collator
+    dataset_wrappers:
+      - kind: subset_wrapper
+        end_index: 1
+
+  valid:
+    kind: amr_dataset
+    name: zpinch
+    split: valid
+    n_input_timesteps: 3
+    n_pushforward_timesteps: 0
+    graph_mode: radius_graph_with_supernodes
+    radius_graph_r: ${vars.radius_graph_r}
+    radius_graph_max_num_neighbors: ${vars.radius_graph_max_num_neighbors}
+    n_supernodes: ${vars.num_supernodes}
+    seed: 42
+    collators:
+      - kind: amr_simformer_collator
+    dataset_wrappers:
+      - kind: subset_wrapper
+        end_index: 1
+
+model:
+  kind: lagrangian_simformer_model
+  conditioner:
+    kind: conditioners.timestep_conditioner_pdearena
+    kwargs: ${select:dim128:${yaml:models/timestep_embed}}
+    optim: ${vars.optim}
+  encoder:
+    kind: encoders.lagrangian_pool_transformer_perceiver
+    num_latent_tokens: 32
+    enc_depth: 2
+    kwargs: ${select:dim96to128:${yaml:models/encoders/pool_transformer_perceiver}}
+    optim: ${vars.optim}
+  latent:
+    kind: latent.transformer_model
+    depth: 2
+    kwargs: ${select:dim128:${yaml:models/latent/transformer}}
+    optim: ${vars.optim}
+  decoder:
+    kind: decoders.lagrangian_perceiver
+    kwargs: ${select:dim128:${yaml:models/decoders/perceiver}}
+    optim: ${vars.optim}
+
+trainer:
+  kind: lagrangian_simformer_trainer
+  precision: float32
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  forward_kwargs:
+    predict_velocity: false
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: mse_loss
+  log_every_n_epochs: 1
+  callbacks: []

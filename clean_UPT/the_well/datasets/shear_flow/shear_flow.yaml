@@ -1,0 +1,83 @@
+dataset_name: shear_flow
+n_spatial_dims: 2
+spatial_resolution:
+- 256
+- 512
+scalar_names: []
+constant_scalar_names:
+- Rayleigh
+- Schmidt
+field_names:
+  0:
+  - tracer
+  - pressure
+  1:
+  - velocity_x
+  - velocity_y
+  2: []
+constant_field_names:
+  0: []
+  1: []
+  2: []
+boundary_condition_types:
+- PERIODIC
+n_files: 28
+n_trajectories_per_file:
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+- 4
+n_steps_per_trajectory:
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+- 200
+grid_type: cartesian

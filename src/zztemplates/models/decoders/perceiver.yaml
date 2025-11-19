@@ -2,6 +2,10 @@ debug:
   dim: 16
   num_attn_heads: 2
 
+dim128:
+  dim: 128
+  num_attn_heads: 2
+
 dim192:
   dim: 192
   num_attn_heads: 3

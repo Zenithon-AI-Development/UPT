@@ -157,3 +157,16 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Benchmarking outputs
+benchmarking/save/
+
+test/
+
+wandb/
+
+not_needed/
+
+zztemplates/
+# Ignore symlink itself
+zztemplates

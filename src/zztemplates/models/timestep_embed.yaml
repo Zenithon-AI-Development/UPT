@@ -1,6 +1,12 @@
 debug:
   dim: 16
 
+dim128:
+  dim: 128
+
+dim192:
+  dim: 192
+
 tiny:
   dim: 192
 

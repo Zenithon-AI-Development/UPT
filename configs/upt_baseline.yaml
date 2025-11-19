@@ -1,0 +1,38 @@
+# UPT Baseline Configuration
+# This is a template config for Stage 0 baseline
+
+# Model configuration
+model:
+  encoder:
+    input_dim: 7  # Number of input channels (e.g., density, pressure, velocity, etc.)
+    latent_dim: 128
+    num_latent_tokens: 128
+  
+  latent_core:
+    dim: 128
+    depth: 4
+    num_heads: 4
+    cond_dim: 128  # Conditioning dimension (if using conditioner)
+    drop_path_rate: 0.0
+  
+  decoder:
+    latent_dim: 128
+    output_dim: 7  # Number of output channels
+  
+  conditioner:
+    cond_dim: 128
+    # Additional conditioner-specific config
+
+# Training configuration
+training:
+  batch_size: 4
+  num_epochs: 10
+  learning_rate: 1e-4
+  weight_decay: 0.01
+
+# Dataset configuration
+dataset:
+  # Dataset-specific config
+  # This depends on your dataset format
+  name: "dummy"  # Replace with actual dataset name
+

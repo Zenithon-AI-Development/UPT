@@ -1,0 +1,12 @@
+---
+alwaysApply: true
+---
+
+## Refactoring rules
+
+- Never delete files or content from files, you can suggest what to delete in the chat by giving an explanation why, but it will always be me manually deleting if needed.
+- Never run commands yourself, give code blocks in chat for bash commands.
+- If multiple approaches exist, list pros/cons briefly and recommend one.
+- Match existing formatting, we care about reorganising print statements during training and the repo structure itself, not about the actual code.
+
+

@@ -1,0 +1,112 @@
+wandb: disabled
+name: helmholtz-quadtree-overfit
+stage_name: helmholtz_quadtree_overfit
+vars:
+  lr: 1.0e-3
+  optim:
+    kind: adam
+    lr: ${vars.lr}
+    weight_decay: 0.0
+    lr_scaler:
+      kind: linear_lr_scaler
+      divisor: 1
+  batch_size: 1
+  max_batch_size: 1
+  epochs: 1000
+  model_dim: 192
+  num_latent_tokens: 256
+  num_supernodes: 2048
+  max_children: 1024
+  aggregator: mlp
+  root_path: /home/workspace/projects/data/datasets_david/datasets/helmholtz_staircase/data
+  attn_aggregator:
+    aggregator: attention
+    aggregator_kwargs:
+      num_heads: 4
+      dropout: 0.0
+      attn_dim: 256
+
+
+datasets:
+  train:
+    kind: well_hs_dataset
+    split: train
+    root: ${vars.root_path}
+    num_input_timesteps: 4
+    num_output_timesteps: 1
+    dataset_wrappers:
+      - kind: subset_wrapper
+        end_index: 1
+    collators:
+      - kind: zpinch_quadtree_collator
+        num_supernodes: ${vars.num_supernodes}
+        max_nodes_per_supernode: ${vars.max_children}
+  valid:
+    kind: well_hs_dataset
+    split: valid
+    root: ${vars.root_path}
+    num_input_timesteps: 4
+    num_output_timesteps: 1
+    dataset_wrappers:
+      - kind: subset_wrapper
+        end_index: 1
+    collators:
+      - kind: zpinch_quadtree_collator
+        num_supernodes: ${vars.num_supernodes}
+        max_nodes_per_supernode: ${vars.max_children}
+
+model:
+  kind: cfd_simformer_model
+  conditioner:
+    kind: conditioners.timestep_velocity_conditioner_pdearena
+    kwargs:
+      dim: 192
+    optim: ${vars.optim}
+  encoder:
+    kind: encoders.quadtree_encoder
+    optim: ${vars.optim}
+    dim: ${vars.model_dim}
+    aggregator: ${vars.aggregator}
+    subnode_feature_dim: 2
+    supernode_feature_dim: 2
+    max_children: ${vars.max_children}
+    expected_stat_dim: 7
+    aggregator_kwargs:
+      hidden_dim: 256
+      num_layers: 2
+      activation: gelu
+  latent:
+    kind: latent.transformer_model
+    optim: ${vars.optim}
+    depth: 4
+    kwargs:
+      dim: 192
+      num_attn_heads: 3
+  decoder:
+    kind: decoders.quadtree_cfd_transformer_perceiver
+    optim: ${vars.optim}
+    depth: 4
+    use_last_norm: true
+    stats_dim: 7
+    max_children: ${vars.max_children}
+    kwargs:
+      dim: 192
+      perc_dim: 96
+      num_attn_heads: 3
+      perc_num_attn_heads: 2
+trainer:
+  kind: cfd_simformer_trainer
+  precision: float32
+  supernode_stats_weight: 0.1
+  supernode_mask_weight: 0.1
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  detach_reconstructions: true
+  reconstruct_prev_x_weight: 0.0
+  reconstruct_dynamics_weight: 0.0
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: mse_loss
+

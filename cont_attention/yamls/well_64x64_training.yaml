@@ -1,0 +1,94 @@
+wandb: cvsim
+name: well-multiresolution-zpinch
+stage_name: stage1
+vars:
+  lr: 1.0e-3
+  batch_size: 16
+  max_batch_size: 4
+  epochs: 100
+
+  optim:
+    kind: adamw
+    lr: ${vars.lr}
+    weight_decay: 1.0e-5
+
+datasets:
+  train:
+    kind: well_dataset
+    resolution: "all"
+    split: train
+    n_input_timesteps: 3
+    n_pushforward_timesteps: 0
+    collators:
+      - kind: well_simformer_collator
+        num_supernodes: 128
+
+  valid:
+    kind: well_dataset
+    resolution: "all"
+    split: valid
+    n_input_timesteps: 3
+    n_pushforward_timesteps: 0
+    seed: 42
+    collators:
+      - kind: well_simformer_collator
+        num_supernodes: 128
+
+  test:
+    kind: well_dataset
+    resolution: "all"
+    split: test
+    n_input_timesteps: 3
+    n_pushforward_timesteps: 0
+    seed: 42
+    collators:
+      - kind: well_simformer_collator
+        num_supernodes: 128
+
+model:
+  kind: cfd_simformer_model
+  conditioner:
+    kind: conditioners.timestep_conditioner_pdearena
+    kwargs: ${select:tiny:${yaml:models/timestep_embed}}
+    optim: ${vars.optim}
+  encoder:
+    kind: encoders.cfd_pool_transformer_perceiver
+    num_latent_tokens: 64
+    enc_depth: 2
+    kwargs: ${select:dim96to192:${yaml:models/encoders/pool_transformer_perceiver}}
+    optim: ${vars.optim}
+  latent:
+    kind: latent.transformer_model
+    depth: 2
+    kwargs: ${select:dim192:${yaml:models/latent/transformer}}
+    optim: ${vars.optim}
+  decoder:
+    kind: decoders.cfd_perceiver
+    kwargs: ${select:dim192:${yaml:models/decoders/perceiver}}
+    optim: ${vars.optim}
+
+trainer:
+  kind: cfd_simformer_trainer
+  precision: float32
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  radius_graph_r: 0.05
+  radius_graph_max_num_neighbors: 8
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: mse_loss
+  log_every_n_epochs: 1
+  callbacks:
+    - kind: offline_loss_callback
+      every_n_epochs: 5
+      dataset_key: valid
+    - kind: offline_loss_callback
+      every_n_epochs: 5
+      dataset_key: test
+    - kind: checkpoint_callback
+      every_n_epochs: 10
+      save_weights: true
+      save_optim: true
+

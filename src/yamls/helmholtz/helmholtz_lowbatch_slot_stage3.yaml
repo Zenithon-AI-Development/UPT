@@ -1,0 +1,137 @@
+wandb: slot-upt-amr
+name: helmholtz_slot_stage3
+stage_name: helmholtz_lowbatch_slot_stage3
+
+vars:
+  lr: 1.0e-3
+  batch_size: 4
+  max_batch_size: 1
+  epochs: 500
+  num_latent_tokens: 256
+  num_supernodes: 2048
+  num_slots_per_supernode: 64
+  radius_graph_r: 5.0
+  radius_graph_max_num_neighbors: 32
+  clamp: 0
+  clamp_mode: log
+  subnode_backend: amr
+  subnode_backend_kwargs: ${vars.amr_backend_kwargs}
+  amr_backend_kwargs:
+    call_mode: inline
+    k: 2
+    min_size: 1
+    max_size: 4
+    nonzero_ratio_threshold: 0.99
+    common_refine_threshold: 0.4
+    integral_refine_threshold: 0.1
+    vorticity_threshold: 0.5
+    momentum_threshold: 0.5
+    shear_threshold: 0.5
+    condition_type: grad
+    pad_fill_value: 0.0
+  amr_field_spec: pressure_real_imag
+  amr_run_mode: t0
+  amr_use_mask: true
+  amr_field_channels: 2
+  amr_mask_channel: 0
+
+  optim:
+    kind: adamw
+    lr: ${vars.lr}
+    weight_decay: 1.0e-5
+    schedule:
+      template: ${yaml:schedules/wupcos_epoch}
+      template.vars.end_epoch: 10
+
+datasets:
+  train:
+    kind: well_hs_dataset
+    split: train
+    num_input_timesteps: 4
+    norm: mean0std1_auto
+    clamp: 0
+    clamp_mode: log
+    max_num_timesteps: 50
+    collators:
+      - kind: cfd_slot_simformer_collator
+        M: ${vars.num_supernodes}
+        N: ${vars.num_slots_per_supernode}
+        subnode_backend: ${vars.subnode_backend}
+        backend_kwargs: ${vars.subnode_backend_kwargs}
+        amr_field_spec: ${vars.amr_field_spec}
+        amr_run_mode: ${vars.amr_run_mode}
+        amr_use_mask: ${vars.amr_use_mask}
+        amr_field_channels: ${vars.amr_field_channels}
+        amr_mask_channel: ${vars.amr_mask_channel}
+  test:
+    kind: well_hs_dataset
+    split: test
+    num_input_timesteps: 4
+    norm: mean0std1_auto
+    clamp: 0
+    clamp_mode: log
+    max_num_timesteps: 50
+    collators:
+      - kind: cfd_slot_simformer_collator
+        M: ${vars.num_supernodes}
+        N: ${vars.num_slots_per_supernode}
+        subnode_backend: ${vars.subnode_backend}
+        backend_kwargs: ${vars.subnode_backend_kwargs}
+        amr_field_spec: ${vars.amr_field_spec}
+        amr_run_mode: ${vars.amr_run_mode}
+        amr_use_mask: ${vars.amr_use_mask}
+        amr_field_channels: ${vars.amr_field_channels}
+        amr_mask_channel: ${vars.amr_mask_channel}
+
+model:
+  kind: composite.cfd_slot_simformer_model_stage2
+  M: ${vars.num_supernodes}
+  N: ${vars.num_slots_per_supernode}
+  num_input_timesteps: ${datasets.train.num_input_timesteps}
+  L_max: 3
+  d_grid: 128
+  d_token_cond: 256
+  d_latent_cond: 256
+  use_pos_mean: true
+  use_pos_var: true
+  pooling: attn
+  conditioner:
+    kind: conditioners.timestep_velocity_conditioner_pdearena
+    kwargs: ${select:dim192:${yaml:models/dim}}
+    optim: ${vars.optim}
+  encoder_tokencond:
+    kind: encoders.cfd_slot_pool_transformer_perceiver_tokencond
+    num_latent_tokens: ${vars.num_latent_tokens}
+    enc_depth: 4
+    kwargs: ${select:dim96to192:${yaml:models/encoders/pool_transformer_perceiver}}
+    optim: ${vars.optim}
+  latent_tokencond:
+    kind: latent.transformer_model_tokencond
+    depth: 4
+    kwargs: ${select:dim192:${yaml:models/latent/transformer}}
+    optim: ${vars.optim}
+  decoder_tokencond:
+    kind: decoders.cfd_slot_transformer_perceiver_tokencond
+    depth: 4
+    use_last_norm: true
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    kwargs: ${select:dim192to96:${yaml:models/decoders/transformer_perceiver}}
+    optim: ${vars.optim}
+
+trainer:
+  kind: cfd_slot_simformer_trainer
+  precision: float32
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  radius_graph_r: ${vars.radius_graph_r}
+  radius_graph_max_num_neighbors: ${vars.radius_graph_max_num_neighbors}
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: mse_loss
+  log_every_n_updates: 1
+  track_every_n_updates: 1
+  exit_on_nan_loss: false
+

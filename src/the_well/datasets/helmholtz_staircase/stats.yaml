@@ -1,0 +1,21 @@
+mean:
+  mask: 6.4869E-02
+  pressure_im: 1.0585E-03
+  pressure_re: 7.4248E-05
+mean_delta:
+  pressure_im: 2.8587E-17
+  pressure_re: 5.8285E-18
+rms:
+  mask: 2.5469E-01
+  pressure_im: 1.9992E-01
+  pressure_re: 1.9963E-01
+rms_delta:
+  pressure_im: 2.5599E-02
+  pressure_re: 2.5599E-02
+std:
+  mask: 2.4629E-01
+  pressure_im: 1.9992E-01
+  pressure_re: 1.9963E-01
+std_delta:
+  pressure_im: 2.5599E-02
+  pressure_re: 2.5599E-02

@@ -1,0 +1,58 @@
+dataset_name: helmholtz_staircase
+n_spatial_dims: 2
+spatial_resolution:
+- 1024
+- 256
+scalar_names: []
+constant_scalar_names:
+- omega
+field_names:
+  0:
+  - pressure_re
+  - pressure_im
+  1: []
+  2: []
+constant_field_names:
+  0:
+  - mask
+  1: []
+  2: []
+boundary_condition_types:
+- OPEN
+- WALL
+n_files: 16
+n_trajectories_per_file:
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+- 3
+n_steps_per_trajectory:
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+- 50
+grid_type: cartesian

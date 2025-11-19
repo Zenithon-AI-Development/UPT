@@ -1,6 +1,7 @@
 import einops
 import torch
 import torch.nn.functional as F
+import time
 
 from models import model_from_kwargs
 from models.base.composite_model_base import CompositeModelBase
@@ -105,14 +106,30 @@ class CfdSimformerModel(CompositeModelBase):
             detach_reconstructions=True,
             reconstruct_prev_x=False,
             reconstruct_dynamics=False,
+            quadtree_supernodes=None,
+            quadtree_subnodes=None,
+            record_component_timings=False,
     ):
         outputs = {}
+        timings = {} if record_component_timings else None
+
+        def _sync_tensor(tensor):
+            if not record_component_timings:
+                return
+            if tensor is None:
+                return
+            if tensor.is_cuda:
+                torch.cuda.synchronize(tensor.device)
+
+        def _elapsed(start_time):
+            return (time.perf_counter() - start_time) * 1000.0
 
         # encode timestep t
         if self.conditioner is not None:
             condition = self.conditioner(timestep=timestep, velocity=velocity)
         else:
             condition = None
+        outputs["condition"] = condition
 
         # encode geometry
         if self.geometry_encoder is not None:
@@ -123,95 +140,131 @@ class CfdSimformerModel(CompositeModelBase):
             static_tokens = None
 
         # encode data ((x_{t-2}, x_{t-1} -> dynamic_{t-1})
-        prev_dynamics = self.encoder(
-            x,
+        encoder_kwargs = dict(
             mesh_pos=mesh_pos,
             mesh_edges=mesh_edges,
             batch_idx=batch_idx,
             condition=condition,
             static_tokens=static_tokens,
         )
+        if quadtree_supernodes is not None:
+            encoder_kwargs["quadtree_supernodes"] = quadtree_supernodes
+        if quadtree_subnodes is not None:
+            encoder_kwargs["quadtree_subnodes"] = quadtree_subnodes
+        _sync_tensor(x)
+        encoder_start_time = time.perf_counter() if record_component_timings else None
+        prev_dynamics = self.encoder(
+            x,
+            **encoder_kwargs,
+        )
+        _sync_tensor(prev_dynamics)
+        if record_component_timings:
+            timings["encoder_ms"] = _elapsed(encoder_start_time)
+            encoder_detail = getattr(self.encoder, "_last_timings", None)
+            if encoder_detail:
+                for name, duration in encoder_detail.items():
+                    timings[f"encoder/{name}"] = float(duration)
         outputs["prev_dynamics"] = prev_dynamics
 
         # predict current latent (dynamic_{t-1} -> dynamic_t)
+        latent_start_time = time.perf_counter() if record_component_timings else None
         dynamics = self.latent(
             prev_dynamics,
             condition=condition,
             static_tokens=static_tokens,
         )
+        _sync_tensor(dynamics)
+        if record_component_timings:
+            timings["processor_ms"] = _elapsed(latent_start_time)
         outputs["dynamics"] = dynamics
 
-        # decode next_latent to next_data (dynamic_t -> x_t)
-        if self.force_decoder_fp32:
-            with torch.autocast(device_type=str(dynamics.device).split(":")[0], enabled=False):
-                x_hat = self.decoder(
-                    dynamics.float(),
-                    query_pos=query_pos.float(),
-                    unbatch_idx=unbatch_idx,
-                    unbatch_select=unbatch_select,
-                    condition=condition.float(),
-                )
-        else:
-            x_hat = self.decoder(
-                dynamics,
-                query_pos=query_pos,
+        def _decode(latent_tensor, query_tensor, condition_tensor):
+            decoder_kwargs = {}
+            if quadtree_supernodes is not None:
+                mask = quadtree_supernodes.get("mask")
+                if mask is not None:
+                    decoder_kwargs["supernode_mask"] = mask
+            result = self.decoder(
+                latent_tensor,
+                query_pos=query_tensor,
                 unbatch_idx=unbatch_idx,
                 unbatch_select=unbatch_select,
-                condition=condition,
+                condition=condition_tensor,
+                **decoder_kwargs,
             )
+            if isinstance(result, dict):
+                return (
+                    result.get("fields"),
+                    result.get("supernode_stats"),
+                    result.get("supernode_mask_logits"),
+                )
+            return result, None, None
+
+        # decode next_latent to next_data (dynamic_t -> x_t)
+        decoder_start_time = time.perf_counter() if record_component_timings else None
+        if self.force_decoder_fp32:
+            with torch.autocast(device_type=str(dynamics.device).split(":")[0], enabled=False):
+                x_hat, stats_pred, mask_logits = _decode(
+                    dynamics.float(),
+                    query_pos.float(),
+                    condition.float() if condition is not None else None,
+                )
+        else:
+            x_hat, stats_pred, mask_logits = _decode(
+                dynamics,
+                query_pos,
+                condition,
+            )
+        _sync_tensor(x_hat)
+        if record_component_timings:
+            timings["decoder_ms"] = _elapsed(decoder_start_time)
         outputs["x_hat"] = x_hat
+        if stats_pred is not None:
+            outputs["supernode_stats_pred"] = stats_pred
+        if mask_logits is not None:
+            outputs["supernode_mask_logits"] = mask_logits
+        if record_component_timings:
+            outputs["timings"] = timings
 
         # reconstruct dynamics_t from (x_{t-1}, \hat{x}_t)
         if reconstruct_dynamics:
-            # calculate t+1
             next_timestep = torch.clamp_max(timestep + 1, max=self.conditioner.num_total_timesteps - 1)
             next_condition = self.conditioner(timestep=next_timestep, velocity=velocity)
-            # reconstruct dynamics_t
             num_output_channels = x_hat.size(1)
             if target is None:
-                # use prediction as encoder input for reconstruction
-                # this could lead to instabilities if the decoder predicts fastly incorrect values
                 x_hat_or_gt = x_hat
                 if detach_reconstructions:
                     x_hat_or_gt = x_hat_or_gt.detach()
             else:
                 x_hat_or_gt = target
+            recon_encoder_kwargs = dict(encoder_kwargs)
+            recon_encoder_kwargs["condition"] = next_condition
             dynamics_hat = self.encoder(
                 torch.concat([x[:, num_output_channels:], x_hat_or_gt], dim=1),
-                mesh_pos=mesh_pos,
-                mesh_edges=mesh_edges,
-                batch_idx=batch_idx,
-                condition=next_condition,
+                **recon_encoder_kwargs,
             )
             outputs["dynamics_hat"] = dynamics_hat
 
         # reconstruct x_{t-1} from dynamic_{t-1}
         if reconstruct_prev_x:
-            # calculate t-1
             prev_timestep = F.relu(timestep - 1)
             prev_condition = self.conditioner(timestep=prev_timestep, velocity=velocity)
-            # reconstruct prev_x_hat
             if self.force_decoder_fp32:
                 with torch.autocast(device_type=str(x.device).split(":")[0], enabled=False):
-                    prev_x_hat = self.decoder(
+                    prev_x_hat, _, _ = _decode(
                         prev_dynamics.detach().float() if detach_reconstructions else prev_dynamics.float(),
-                        query_pos=query_pos.float(),
-                        unbatch_idx=unbatch_idx,
-                        unbatch_select=unbatch_select,
-                        condition=prev_condition.float(),
+                        query_pos.float(),
+                        prev_condition.float() if prev_condition is not None else None,
                     )
             else:
-                prev_x_hat = self.decoder(
+                prev_x_hat, _, _ = _decode(
                     prev_dynamics.detach() if detach_reconstructions else prev_dynamics,
-                    query_pos=query_pos,
-                    unbatch_idx=unbatch_idx,
-                    unbatch_select=unbatch_select,
-                    condition=prev_condition,
+                    query_pos,
+                    prev_condition,
                 )
             outputs["prev_x_hat"] = prev_x_hat
 
         return outputs
-
     @torch.no_grad()
     def rollout(
             self,
@@ -237,6 +290,19 @@ class CfdSimformerModel(CompositeModelBase):
         x_hats = []
         timestep = torch.zeros(1, device=x.device, dtype=torch.long)
         condition = None
+
+        def _decode(latent_tensor, query_tensor, condition_tensor):
+            result = self.decoder(
+                latent_tensor,
+                query_pos=query_tensor,
+                unbatch_idx=unbatch_idx,
+                unbatch_select=unbatch_select,
+                condition=condition_tensor,
+            )
+            if isinstance(result, dict):
+                return result.get("fields")
+            return result
+
         if mode == "latent":
             # rollout via latent (depending on dynamics_transformer, encoder is either not used at all or only for t0)
             # initial forward
@@ -258,20 +324,16 @@ class CfdSimformerModel(CompositeModelBase):
             if intermediate_results:
                 if self.force_decoder_fp32:
                     with torch.autocast(device_type=str(x.device).split(":")[0], enabled=False):
-                        x_hat = self.decoder(
+                        x_hat = _decode(
                             dynamics.float(),
-                            query_pos=query_pos.float(),
-                            unbatch_idx=unbatch_idx,
-                            unbatch_select=unbatch_select,
-                            condition=condition.float(),
+                            query_pos.float(),
+                            condition.float() if condition is not None else None,
                         )
                 else:
-                    x_hat = self.decoder(
+                    x_hat = _decode(
                         dynamics,
-                        query_pos=query_pos,
-                        unbatch_idx=unbatch_idx,
-                        unbatch_select=unbatch_select,
-                        condition=condition,
+                        query_pos,
+                        condition,
                     )
                 x_hats.append(x_hat)
             # rollout
@@ -290,20 +352,16 @@ class CfdSimformerModel(CompositeModelBase):
                     # decode dynamic to data
                     if self.force_decoder_fp32:
                         with torch.autocast(device_type=str(x.device).split(":")[0], enabled=False):
-                            x_hat = self.decoder(
+                            x_hat = _decode(
                                 dynamics.float(),
-                                query_pos=query_pos.float(),
-                                unbatch_idx=unbatch_idx,
-                                unbatch_select=unbatch_select,
-                                condition=condition.float(),
+                                query_pos.float(),
+                                condition.float() if condition is not None else None,
                             )
                     else:
-                        x_hat = self.decoder(
+                        x_hat = _decode(
                             dynamics,
-                            query_pos=query_pos,
-                            unbatch_idx=unbatch_idx,
-                            unbatch_select=unbatch_select,
-                            condition=condition,
+                            query_pos,
+                            condition,
                         )
                     if clip is not None:
                         x_hat = x_hat.clip(-clip, clip)

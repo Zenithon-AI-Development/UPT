@@ -1,0 +1,98 @@
+wandb: trl2d_quadtree
+name: trl2d-quadtree-train
+stage_name: stage1
+vars:
+  lr: 1.0e-3
+  optim:
+    kind: adam
+    lr: ${vars.lr}
+    betas: [0.9, 0.99]
+  batch_size: 1
+  max_batch_size: 1
+  epochs: 1000
+  model_dim: 192
+  num_latent_tokens: 256
+  num_supernodes: 2048
+  max_children: 128
+  aggregator: mlp
+  attn_aggregator:
+    aggregator: attention
+    aggregator_kwargs:
+      num_heads: 4
+      dropout: 0.0
+      attn_dim: 256
+  root_path: /home/workspace/projects/data/datasets_david/datasets/turbulent_radiative_layer_2D/data
+
+
+datasets:
+  train:
+    kind: well_trl2d_dataset
+    split: train
+    root: ${vars.root_path}
+    num_input_timesteps: 4
+    num_output_timesteps: 1
+    dataset_wrappers:
+      - kind: subset_wrapper
+        end_index: 1
+    collators:
+      - kind: zpinch_quadtree_collator
+        num_supernodes: ${vars.num_supernodes}
+        max_nodes_per_supernode: ${vars.max_children}
+  valid:
+    kind: well_trl2d_dataset
+    split: val
+    root: ${vars.root_path}
+    num_input_timesteps: 4
+    num_output_timesteps: 1
+    dataset_wrappers:
+      - kind: subset_wrapper
+        end_index: 1
+    collators:
+      - kind: zpinch_quadtree_collator
+        num_supernodes: ${vars.num_supernodes}
+        max_nodes_per_supernode: ${vars.max_children}
+
+model:
+  kind: cfd_simformer_model
+  conditioner:
+    kind: conditioners.timestep_velocity_conditioner_pdearena
+    kwargs: ${select:dim192:${yaml:models/dim}}
+    optim: ${vars.optim}
+  encoder:
+    kind: encoders.quadtree_encoder
+    optim: ${vars.optim}
+    dim: ${vars.model_dim}
+    aggregator: ${vars.aggregator}
+    subnode_feature_dim: 4
+    supernode_feature_dim: 4
+    max_children: ${vars.max_children}
+    expected_stat_dim: 4
+    aggregator_kwargs:
+      hidden_dim: 256
+      num_layers: 2
+      activation: gelu
+  latent:
+    kind: latent.transformer_model
+    optim: ${vars.optim}
+    depth: 4
+    kwargs: ${select:dim192:${yaml:models/latent/transformer}}
+  decoder:
+    kind: decoders.cfd_transformer_perceiver
+    optim: ${vars.optim}
+    depth: 4
+    use_last_norm: true
+    kwargs: ${select:dim192to96:${yaml:models/decoders/transformer_perceiver}}
+
+trainer:
+  kind: cfd_simformer_trainer
+  precision: float32
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  detach_reconstructions: true
+  reconstruct_prev_x_weight: 0.0
+  reconstruct_dynamics_weight: 0.0
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: mse_loss

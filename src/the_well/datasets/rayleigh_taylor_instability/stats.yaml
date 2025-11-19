@@ -1,0 +1,36 @@
+mean:
+  density: 7.7363E-01
+  velocity:
+  - -6.0036E-06
+  - -1.6880E-05
+  - -4.4674E-06
+mean_delta:
+  density: -5.1160E-11
+  velocity:
+  - -3.2712E-08
+  - -2.4829E-07
+  - -1.7763E-08
+rms:
+  density: 8.1901E-01
+  velocity:
+  - 8.2252E-03
+  - 8.1858E-03
+  - 1.3937E-02
+rms_delta:
+  density: 2.2927E-02
+  velocity:
+  - 3.1900E-03
+  - 3.1910E-03
+  - 3.4335E-03
+std:
+  density: 2.6884E-01
+  velocity:
+  - 8.2252E-03
+  - 8.1858E-03
+  - 1.3937E-02
+std_delta:
+  density: 2.2927E-02
+  velocity:
+  - 3.1900E-03
+  - 3.1910E-03
+  - 3.4335E-03

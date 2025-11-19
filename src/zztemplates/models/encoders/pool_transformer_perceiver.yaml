@@ -110,6 +110,13 @@ dim64to128:
   enc_num_attn_heads: 2
   perc_num_attn_heads: 2
 
+dim96to128:
+  gnn_dim: 96
+  enc_dim: 96
+  perc_dim: 128
+  enc_num_attn_heads: 2
+  perc_num_attn_heads: 2
+
 dim96to192:
   gnn_dim: 96
   enc_dim: 96

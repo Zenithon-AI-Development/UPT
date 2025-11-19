@@ -1,0 +1,42 @@
+mean:
+  density: 5.1732E+01
+  pressure: 9.9965E-01
+  velocity:
+  - -3.8526E-03
+  - -9.6489E-06
+  - -1.5510E-02
+mean_delta:
+  density: 2.2292E-02
+  pressure: -6.4838E-06
+  velocity:
+  - -3.2340E-05
+  - 2.4479E-08
+  - -1.7244E-04
+rms:
+  density: 7.0925E+01
+  pressure: 9.9967E-01
+  velocity:
+  - 3.8042E-02
+  - 6.4501E-03
+  - 2.7871E-02
+rms_delta:
+  density: 1.3795E+01
+  pressure: 7.2664E-03
+  velocity:
+  - 7.5060E-03
+  - 6.6136E-03
+  - 9.6848E-03
+std:
+  density: 4.8520E+01
+  pressure: 6.0131E-03
+  velocity:
+  - 3.7847E-02
+  - 6.4501E-03
+  - 2.3157E-02
+std_delta:
+  density: 1.3795E+01
+  pressure: 7.2664E-03
+  velocity:
+  - 7.5060E-03
+  - 6.6136E-03
+  - 9.6832E-03

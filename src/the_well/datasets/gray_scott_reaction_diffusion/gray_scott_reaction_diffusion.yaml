@@ -1,0 +1,37 @@
+dataset_name: gray_scott_reaction_diffusion
+n_spatial_dims: 2
+spatial_resolution:
+- 128
+- 128
+scalar_names: []
+constant_scalar_names:
+- F
+- k
+field_names:
+  0:
+  - A
+  - B
+  1: []
+  2: []
+constant_field_names:
+  0: []
+  1: []
+  2: []
+boundary_condition_types:
+- PERIODIC
+n_files: 6
+n_trajectories_per_file:
+- 20
+- 20
+- 20
+- 20
+- 20
+- 20
+n_steps_per_trajectory:
+- 1001
+- 1001
+- 1001
+- 1001
+- 1001
+- 1001
+grid_type: cartesian

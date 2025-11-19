@@ -1,0 +1,210 @@
+wandb: attention_testing
+name: zpinch-128x128-fano-baseline
+stage_name: stage1
+
+vars:
+  # Training hyperparameters (same as baseline)
+  lr: 5.0e-5
+  batch_size: 4
+  max_batch_size: 4
+  epochs: 500
+  version: v1
+  
+  # Model dimensions (keep same as baseline for fair comparison)
+  model_dim: 192
+  num_latent_tokens: 256  # Must match baseline!
+  
+  # FANO-specific parameters
+  encoder_type: fano  # 'fano' for pure FANO, 'hybrid_fano' for CfdPool+FANO
+  num_fano_layers: 2  # Start with 2, try 4 if underfitting
+  fano_num_heads: 6   # More heads than baseline (was 2 in standard encoder)
+  fourier_modes: 9    # Fourier modes per dimension (patch_size//2 + 1)
+  
+  # Patching configuration
+  grid_h: 128
+  grid_w: 128
+  num_patches_h: 8    # 8×8 = 64 patches total
+  num_patches_w: 8
+  patch_pooling_type: spatial_avg  # 'spatial_avg', 'learned', or 'attention'
+  
+  # Disable graph-based components for pure FANO
+  radius_graph_r: null
+  radius_graph_max_num_neighbors: null
+  num_supernodes: null
+  
+  # Rollout settings
+  rollout_num_input_points: 16384  # Full grid
+  clamp: 0
+  clamp_mode: log
+
+  optim:
+    kind: lion
+    lr: ${vars.lr}
+    weight_decay: 0.5
+    schedule:
+      template: ${yaml:schedules/wupcos_epoch_}
+      template.vars.end_epoch: 10
+
+datasets:
+  train:
+    kind: well_zpinch_dataset
+    split: train
+    root: /home/workspace/flash/ZEN_WELL_train/128x128/data/
+    num_input_timesteps: 4
+    norm: mean0std1_auto
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    max_num_timesteps: 202
+    collators:
+      - kind: cfd_simformer_collator
+        num_supernodes: ${vars.num_supernodes}  # null for FANO, keeps collator compatible
+
+  train_rollout:
+    kind: well_zpinch_dataset
+    split: train
+    root: /home/workspace/flash/ZEN_WELL_train/128x128/data/
+    num_input_timesteps: .inf
+    max_num_timesteps: 202
+    num_input_points: ${vars.rollout_num_input_points}
+    norm: mean0std1_auto
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    collators:
+      - kind: cfd_simformer_collator
+        num_supernodes: ${vars.num_supernodes}
+
+  test_rollout:
+    kind: well_zpinch_dataset
+    split: test
+    root: /home/workspace/flash/ZEN_WELL_train/128x128/data/
+    num_input_timesteps: .inf
+    max_num_timesteps: 202
+    num_input_points: ${vars.rollout_num_input_points}
+    norm: mean0std1_auto
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    collators:
+      - kind: cfd_simformer_collator
+        num_supernodes: ${vars.num_supernodes}
+
+  valid_rollout:
+    kind: well_zpinch_dataset
+    split: valid
+    root: /home/workspace/flash/ZEN_WELL_train/128x128/data/
+    num_input_timesteps: .inf
+    max_num_timesteps: 202
+    num_input_points: ${vars.rollout_num_input_points}
+    norm: mean0std1_auto
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    collators:
+      - kind: cfd_simformer_collator
+        num_supernodes: ${vars.num_supernodes}
+
+  test:
+    kind: well_zpinch_dataset
+    split: test
+    root: /home/workspace/flash/ZEN_WELL_train/128x128/data/
+    num_input_timesteps: 4
+    norm: mean0std1_auto
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    max_num_timesteps: 202
+    collators:
+      - kind: cfd_simformer_collator
+        num_supernodes: ${vars.num_supernodes}
+
+model:
+  kind: cfd_simformer_model  # Keep same wrapper - only encoder changes
+  
+  conditioner:
+    kind: conditioners.timestep_velocity_conditioner_pdearena
+    kwargs:
+      dim: ${vars.model_dim}
+    optim: ${vars.optim}
+  
+  encoder:
+    kind: encoders.cfd_fano_perceiver  # ← NEW FANO ENCODER
+    num_latent_tokens: ${vars.num_latent_tokens}
+    num_fano_layers: ${vars.num_fano_layers}
+    kwargs:
+      input_dim: 28  # 4 timesteps × 7 channels
+      d_model: ${vars.model_dim}
+      num_heads: ${vars.fano_num_heads}
+      perc_dim: ${vars.model_dim}
+      perc_num_heads: 3  # Perceiver cross-attention heads
+      H: ${vars.grid_h}
+      W: ${vars.grid_w}
+      num_patches_h: ${vars.num_patches_h}
+      num_patches_w: ${vars.num_patches_w}
+      fourier_modes: ${vars.fourier_modes}
+      pooling_type: ${vars.patch_pooling_type}
+      dropout: 0.1
+      activation: gelu  # Better for continuous functions
+      dim_feedforward: 768  # 4 × d_model
+    optim: ${vars.optim}
+  
+  latent:
+    kind: latent.transformer_model  # UNCHANGED - same approximator
+    depth: 4
+    kwargs:
+      dim: ${vars.model_dim}
+      num_attn_heads: 3
+      drop_path_rate: 0.0
+      init_weights: xavier_uniform
+    optim: ${vars.optim}
+  
+  decoder:
+    kind: decoders.cfd_transformer_perceiver  # UNCHANGED - same decoder
+    depth: 4
+    use_last_norm: true
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    kwargs:
+      dim: ${vars.model_dim}
+      perc_dim: 96
+      num_attn_heads: 3
+      perc_num_attn_heads: 2
+      drop_path_rate: 0.0
+      init_weights: xavier_uniform
+    optim: ${vars.optim}
+
+trainer:
+  kind: cfd_simformer_trainer
+  precision: float32  # Keep fp32 for stability
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  radius_graph_r: ${vars.radius_graph_r}  # null for FANO
+  radius_graph_max_num_neighbors: ${vars.radius_graph_max_num_neighbors}  # null for FANO
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: mse_loss
+  early_stopper:
+    kind: metric_early_stopper
+    every_n_epochs: 1
+    tolerance: 10
+    metric_key: loss/online/x_hat/E1
+  log_every_n_epochs: 1
+  callbacks:
+    - kind: best_checkpoint_callback
+      every_n_epochs: 1
+      metric_key: loss/online/x_hat/E1
+      save_optim: true
+    - kind: checkpoint_callback
+      every_n_epochs: 2
+      save_weights: false
+      save_latest_weights: true
+      save_latest_optim: true
+    - kind: checkpoint_callback
+      every_n_epochs: 10
+      save_weights: true
+      save_optim: true
+    - kind: offline_correlation_time_callback
+      every_n_epochs: 2
+      dataset_key: train_rollout
+    - kind: offline_correlation_time_callback
+      every_n_epochs: 2
+      dataset_key: test_rollout
+

@@ -1,0 +1,35 @@
+dataset_name: acoustic_scattering_inclusions
+n_spatial_dims: 2
+spatial_resolution:
+- 256
+- 256
+scalar_names: []
+constant_scalar_names: []
+field_names:
+  0:
+  - pressure
+  1:
+  - velocity_x
+  - velocity_y
+  2: []
+constant_field_names:
+  0:
+  - density
+  - speed_of_sound
+  1: []
+  2: []
+boundary_condition_types:
+- OPEN
+- WALL
+n_files: 4
+n_trajectories_per_file:
+- 100
+- 100
+- 100
+- 100
+n_steps_per_trajectory:
+- 102
+- 102
+- 102
+- 102
+grid_type: cartesian

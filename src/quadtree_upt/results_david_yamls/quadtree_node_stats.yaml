@@ -1,0 +1,132 @@
+helmholtz:
+  indices:
+  - 0
+  - 4784
+  - 9568
+  - 14351
+  - 19135
+  stats:
+  - channels: 2
+    depth_max: 8
+    depth_mean: 7.99064302444458
+    depth_min: 6
+    grid: 1024x256
+    index: 0
+    nodes: 62626
+  - channels: 2
+    depth_max: 8
+    depth_mean: 7.9911675453186035
+    depth_min: 6
+    grid: 1024x256
+    index: 4784
+    nodes: 62722
+  - channels: 2
+    depth_max: 8
+    depth_mean: 7.9911675453186035
+    depth_min: 6
+    grid: 1024x256
+    index: 9568
+    nodes: 62722
+  - channels: 2
+    depth_max: 8
+    depth_mean: 7.9911675453186035
+    depth_min: 6
+    grid: 1024x256
+    index: 14351
+    nodes: 62722
+  - channels: 2
+    depth_max: 8
+    depth_mean: 7.990475654602051
+    depth_min: 5
+    grid: 1024x256
+    index: 19135
+    nodes: 62368
+  total_samples: 19136
+trl2d:
+  indices:
+  - 0
+  - 1746
+  - 3492
+  - 5237
+  - 6983
+  stats:
+  - channels: 4
+    depth_max: 7
+    depth_mean: 7.0
+    depth_min: 7
+    grid: 128x384
+    index: 0
+    nodes: 16384
+  - channels: 4
+    depth_max: 7
+    depth_mean: 7.0
+    depth_min: 7
+    grid: 128x384
+    index: 1746
+    nodes: 16384
+  - channels: 4
+    depth_max: 7
+    depth_mean: 7.0
+    depth_min: 7
+    grid: 128x384
+    index: 3492
+    nodes: 16384
+  - channels: 4
+    depth_max: 7
+    depth_mean: 6.9897780418396
+    depth_min: 2
+    grid: 128x384
+    index: 5237
+    nodes: 13696
+  - channels: 4
+    depth_max: 7
+    depth_mean: 6.991439342498779
+    depth_min: 3
+    grid: 128x384
+    index: 6983
+    nodes: 14368
+  total_samples: 6984
+zpinch:
+  indices:
+  - 0
+  - 20
+  - 40
+  - 61
+  - 81
+  stats:
+  - channels: 2
+    depth_max: 6
+    depth_mean: 5.978505611419678
+    depth_min: 1
+    grid: 64x64
+    index: 0
+    nodes: 1954
+  - channels: 2
+    depth_max: 6
+    depth_mean: 5.995121955871582
+    depth_min: 1
+    grid: 64x64
+    index: 20
+    nodes: 2050
+  - channels: 2
+    depth_max: 6
+    depth_mean: 5.953488349914551
+    depth_min: 2
+    grid: 64x64
+    index: 40
+    nodes: 2236
+  - channels: 2
+    depth_max: 6
+    depth_mean: 5.969125270843506
+    depth_min: 2
+    grid: 64x64
+    index: 61
+    nodes: 2332
+  - channels: 2
+    depth_max: 6
+    depth_mean: 5.969125270843506
+    depth_min: 2
+    grid: 64x64
+    index: 81
+    nodes: 2332
+  total_samples: 82

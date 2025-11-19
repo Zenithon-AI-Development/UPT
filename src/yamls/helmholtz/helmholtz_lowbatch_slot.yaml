@@ -1,0 +1,97 @@
+wandb: slot-upt-overfit
+name: helmholtz_slot
+stage_name: helmholtz_lowbatch_slot
+
+vars:
+  lr: 1.0e-3
+  batch_size: 2  # smaller for stability during bring-up
+  max_batch_size: 4
+  epochs: 500
+  num_latent_tokens: 256
+  num_supernodes: 512
+  num_slots_per_supernode: 64
+  radius_graph_r: 5.0
+  radius_graph_max_num_neighbors: 32
+  clamp: 0
+  clamp_mode: log
+
+  optim:
+    kind: adamw
+    lr: ${vars.lr}
+    weight_decay: 1.0e-5
+    schedule:
+      template: ${yaml:schedules/wupcos_epoch}
+      template.vars.end_epoch: 10
+
+datasets:
+  train:
+    kind: well_hs_dataset
+    split: train
+    num_input_timesteps: 4
+    norm: mean0std1_auto
+    clamp: 0
+    clamp_mode: log
+    max_num_timesteps: 50
+    collators:
+      - kind: cfd_slot_simformer_collator
+        M: ${vars.num_supernodes}
+        N: ${vars.num_slots_per_supernode}
+  test:
+    kind: well_hs_dataset
+    split: test
+    num_input_timesteps: 4
+    norm: mean0std1_auto
+    clamp: 0
+    clamp_mode: log
+    max_num_timesteps: 50
+    collators:
+      - kind: cfd_slot_simformer_collator
+        M: ${vars.num_supernodes}
+        N: ${vars.num_slots_per_supernode}
+
+model:
+  kind: cfd_slot_simformer_model
+  M: ${vars.num_supernodes}
+  N: ${vars.num_slots_per_supernode}
+  conditioner:
+    kind: conditioners.timestep_velocity_conditioner_pdearena
+    kwargs: ${select:dim192:${yaml:models/dim}}
+    optim: ${vars.optim}
+  encoder:
+    kind: encoders.cfd_slot_pool_transformer_perceiver
+    num_latent_tokens: ${vars.num_latent_tokens}
+    enc_depth: 4
+    kwargs: ${select:dim96to192:${yaml:models/encoders/pool_transformer_perceiver}}
+    optim: ${vars.optim}
+  latent:
+    kind: latent.transformer_model
+    depth: 4
+    kwargs: ${select:dim192:${yaml:models/latent/transformer}}
+    optim: ${vars.optim}
+  decoder:
+    kind: decoders.cfd_slot_transformer_perceiver
+    depth: 4
+    use_last_norm: true
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    kwargs: ${select:dim192to96:${yaml:models/decoders/transformer_perceiver}}
+    optim: ${vars.optim}
+
+trainer:
+  kind: cfd_slot_simformer_trainer
+  precision: float32
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  radius_graph_r: ${vars.radius_graph_r}
+  radius_graph_max_num_neighbors: ${vars.radius_graph_max_num_neighbors}
+  # more frequent logging and robust startup
+  log_every_n_updates: 1
+  track_every_n_updates: 1
+  exit_on_nan_loss: false
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: mse_loss
+
+
