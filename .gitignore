@@ -40,6 +40,10 @@ wandb/
 wandb_configs/
 *.wandb
 
+# Generated outputs
+animations/
+logs/
+
 # Experiment outputs
 yamls_run*/
 yamls_search_outputs/
