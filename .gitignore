@@ -170,3 +170,4 @@ not_needed/
 zztemplates/
 # Ignore symlink itself
 zztemplates
+upt-tutorial/
