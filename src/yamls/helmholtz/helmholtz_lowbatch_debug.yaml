@@ -1,18 +1,20 @@
 wandb: newpt_logging
-name: helmholtz-overfit
-stage_name: helmholtz_overfit
-stage_id: helmholtz_overfit_dev
+name: helmholtz_baseline_debug
+stage_name: helmholtz_lowbatch
+stage_id: helmholtz_lowbatch_debug_v7
+
 vars:
   lr: 1.0e-3
-  batch_size: 1
-  max_batch_size: 1
+  batch_size: 4
+  max_batch_size: 4
   epochs: 1
   num_latent_tokens: 256
-  num_supernodes: 1024
+  num_supernodes: 2048
   radius_graph_r: 5.0
   radius_graph_max_num_neighbors: 32
   clamp: 0
   clamp_mode: log
+
   optim:
     kind: adamw
     lr: ${vars.lr}
@@ -27,66 +29,20 @@ datasets:
     split: train
     num_input_timesteps: 4
     norm: mean0std1_auto
-    clamp: ${vars.clamp}
-    clamp_mode: ${vars.clamp_mode}
+    clamp: 0
+    clamp_mode: log
     max_num_timesteps: 50
     collators:
       - kind: cfd_simformer_collator
         num_supernodes: ${vars.num_supernodes}
-    dataset_wrappers:
-      - kind: shuffle_wrapper
-        seed: 0
-
-
-  train_rollout:
-    kind: well_hs_dataset
-    split: train
-    num_input_timesteps: .inf
-    max_num_timesteps: 50
-    num_input_points: 65536
-    norm: mean0std1_auto
-    clamp: ${vars.clamp}
-    clamp_mode: ${vars.clamp_mode}
-    collators:
-      - kind: cfd_simformer_collator
-        num_supernodes: ${vars.num_supernodes}
-
-  test_rollout:
+  test:
     kind: well_hs_dataset
     split: test
-    num_input_timesteps: .inf
-    max_num_timesteps: 50
-    max_num_sequences: 1
-    num_input_points: 65536
-    norm: mean0std1_auto
-    clamp: ${vars.clamp}
-    clamp_mode: ${vars.clamp_mode}
-    collators:
-      - kind: cfd_simformer_collator
-        num_supernodes: ${vars.num_supernodes}
-
-  valid_rollout:
-    kind: well_hs_dataset
-    split: valid
-    num_input_timesteps: .inf
-    max_num_timesteps: 50
-    max_num_sequences: 1
-    num_input_points: 65536
-    norm: mean0std1_auto
-    clamp: ${vars.clamp}
-    clamp_mode: ${vars.clamp_mode}
-    collators:
-      - kind: cfd_simformer_collator
-        num_supernodes: ${vars.num_supernodes}
-  valid:
-    kind: well_hs_dataset
-    split: valid
     num_input_timesteps: 4
     norm: mean0std1_auto
-    clamp: ${vars.clamp}
-    clamp_mode: ${vars.clamp_mode}
+    clamp: 0
+    clamp_mode: log
     max_num_timesteps: 50
-    max_num_sequences: 1
     collators:
       - kind: cfd_simformer_collator
         num_supernodes: ${vars.num_supernodes}
@@ -100,17 +56,17 @@ model:
   encoder:
     kind: encoders.cfd_pool_transformer_perceiver
     num_latent_tokens: ${vars.num_latent_tokens}
-    enc_depth: 2
+    enc_depth: 4
     kwargs: ${select:dim96to192:${yaml:models/encoders/pool_transformer_perceiver}}
     optim: ${vars.optim}
   latent:
     kind: latent.transformer_model
-    depth: 2
+    depth: 4
     kwargs: ${select:dim192:${yaml:models/latent/transformer}}
     optim: ${vars.optim}
   decoder:
     kind: decoders.cfd_transformer_perceiver
-    depth: 2
+    depth: 4
     use_last_norm: true
     clamp: ${vars.clamp}
     clamp_mode: ${vars.clamp_mode}
@@ -130,12 +86,22 @@ trainer:
     loss_function:
       kind: mse_loss
   log_every_n_epochs: 1
-  callbacks: []
 
-  # timing/profiling (disabled by default; enable for Helmholtz tests only)
+  # keep epoch short for quick timing validation (dataset subset)
+  train_max_size: 200  # ~50 updates/epoch with batch_size=4
+
   timing:
     enabled: true
-    sample_every_n_updates: 50
+    sample_every_n_updates: 5
     sample_first_n_per_epoch: 3
     reduce: mean
     file_format: pkl
+
+  memory:
+    enabled: true
+    sample_every_n_updates: 5
+    sample_first_n_per_epoch: 3
+    reduce: max
+    file_format: pkl
+
+

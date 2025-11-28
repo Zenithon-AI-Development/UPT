@@ -1,5 +1,6 @@
 import os
 from functools import cached_property
+import time
 from pathlib import Path
 
 import kappamodules.utils.tensor_cache as tc
@@ -139,11 +140,25 @@ class CfdSimformerTrainer(SgdTrainer):
             data = data.to(self.model.device, non_blocking=True)
             return data
 
-        def prepare(self, batch, dataset_mode=None):
+        def prepare(self, batch, dataset_mode=None, record_timings: bool = False):
             dataset_mode = dataset_mode or self.trainer.dataset_mode
             batch, ctx = batch
+            prep_timings = {} if record_timings else None
+            prep_mems = {}  # bytes
+            if record_timings:
+                prep_start_time = time.perf_counter()
             mesh_pos = self.to_device(item="mesh_pos", batch=batch, dataset_mode=dataset_mode)
             batch_idx = ctx["batch_idx"].to(self.model.device, non_blocking=True)
+            if record_timings and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            if record_timings:
+                to_device_start = time.perf_counter()
+                # memory: to_device phase
+                if torch.cuda.is_available():
+                    try:
+                        torch.cuda.reset_peak_memory_stats()
+                    except Exception:
+                        pass
             data = dict(
                 x=self.to_device(item="x", batch=batch, dataset_mode=dataset_mode),
                 geometry2d=self.to_device(item="geometry2d", batch=batch, dataset_mode=dataset_mode),
@@ -156,6 +171,15 @@ class CfdSimformerTrainer(SgdTrainer):
                 unbatch_select=ctx["unbatch_select"].to(self.model.device, non_blocking=True),
                 target=self.to_device(item="target", batch=batch, dataset_mode=dataset_mode),
             )
+            if record_timings and torch.cuda.is_available():
+                torch.cuda.synchronize()
+            if record_timings:
+                prep_timings["prepare_to_device_ms"] = (time.perf_counter() - to_device_start) * 1000.0
+                if torch.cuda.is_available():
+                    try:
+                        prep_mems["mem/model/prepare/to_device_bytes"] = int(torch.cuda.max_memory_allocated())
+                    except Exception:
+                        pass
             if "quadtree_supernodes" in ctx:
                 data["quadtree_supernodes"] = {k: v.to(self.model.device, non_blocking=True) for k, v in ctx["quadtree_supernodes"].items()}
             if "quadtree_subnodes" in ctx:
@@ -171,6 +195,13 @@ class CfdSimformerTrainer(SgdTrainer):
                 else:
                     flow = "target_to_source"
                     supernode_idxs = ctx["supernode_idxs"].to(self.model.device, non_blocking=True)
+                if record_timings:
+                    graph_start = time.perf_counter()
+                    if torch.cuda.is_available():
+                        try:
+                            torch.cuda.reset_peak_memory_stats()
+                        except Exception:
+                            pass
                 mesh_edges = radius_graph(
                     x=mesh_pos,
                     r=self.trainer.radius_graph_r,
@@ -179,6 +210,15 @@ class CfdSimformerTrainer(SgdTrainer):
                     loop=True,
                     flow=flow,
                 )
+                if record_timings and torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                if record_timings:
+                    prep_timings["graph_ms"] = (time.perf_counter() - graph_start) * 1000.0
+                    if torch.cuda.is_available():
+                        try:
+                            prep_mems["mem/model/prepare/graph_bytes"] = int(torch.cuda.max_memory_allocated())
+                        except Exception:
+                            pass
                 if supernode_idxs is not None:
                     is_supernode_edge = torch.isin(mesh_edges[0], supernode_idxs)
                     mesh_edges = mesh_edges[:, is_supernode_edge]
@@ -191,17 +231,45 @@ class CfdSimformerTrainer(SgdTrainer):
             else:
                 mesh_edges = None
             data["mesh_edges"] = mesh_edges
+            if record_timings:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                prep_timings["prepare_ms"] = (time.perf_counter() - prep_start_time) * 1000.0
+                # aggregate prepare peak (max of sub-peaks)
+                prep_peak = 0
+                for k in ["mem/model/prepare/to_device_bytes", "mem/model/prepare/graph_bytes"]:
+                    prep_peak = max(prep_peak, int(prep_mems.get(k, 0)))
+                if prep_peak:
+                    prep_mems["mem/model/prepare_bytes"] = int(prep_peak)
+                return data, prep_timings, prep_mems
             return data
 
         def forward(self, batch, reduction="mean"):
-            data = self.prepare(batch=batch)
+            record_prepare_timings = bool(getattr(self.trainer, "timing_cfg", None) and self.trainer.timing_cfg.get("enabled", False))
+            record_memory = bool(getattr(self.trainer, "memory_cfg", None) and self.trainer.memory_cfg.get("enabled", False))
+            # ensure prepare collects memory peaks even if timing is disabled
+            prepared = self.prepare(batch=batch, record_timings=(record_prepare_timings or record_memory))
+            if isinstance(prepared, tuple):
+                # backward compatibility: could be (data, timings) or (data, timings, mems)
+                if len(prepared) == 3:
+                    data, prep_timings, prep_mems = prepared
+                else:
+                    data, prep_timings = prepared
+                    prep_mems = {}
+            else:
+                data, prep_timings = prepared, None
+                prep_mems = {}
 
             x = data.pop("x")
             target = data.pop("target")
             batch_idx = data["batch_idx"]
             batch_size = batch_idx.max() + 1
 
-            profile_flag = os.getenv("PROFILE_COMPONENT_TIMES", "0").lower() not in {"0", "false", ""}
+            # enable inner component timings strictly via config timing.enabled
+            timing_cfg = getattr(self.trainer, "timing_cfg", None)
+            enabled_by_cfg = bool(isinstance(timing_cfg, dict) and timing_cfg.get("enabled", False))
+            profile_flag = enabled_by_cfg
+            #profile_flag = (os.getenv("PROFILE_COMPONENT_TIMES", "0").lower() not in {"0", "false", ""})
             if profile_flag and self._timing_count == 0:
                 self.trainer.logger.info("record_component_timings enabled")
 
@@ -216,7 +284,34 @@ class CfdSimformerTrainer(SgdTrainer):
                 reconstruct_prev_x=self.trainer.reconstruct_prev_x_weight > 0,
                 reconstruct_dynamics=self.trainer.reconstruct_dynamics_weight > 0,
                 record_component_timings=profile_flag,
+                record_component_memory=record_memory,
             )
+            if prep_timings is not None:
+                timings = model_outputs.get("timings", {})
+                timings.update({
+                    "prepare_ms": prep_timings.get("prepare_ms", 0.0),
+                    "prepare_to_device_ms": prep_timings.get("prepare_to_device_ms", 0.0),
+                })
+                if "graph_ms" in prep_timings:
+                    timings["graph_ms"] = prep_timings["graph_ms"]
+                model_outputs["timings"] = timings
+            if record_memory:
+                mems = model_outputs.get("memories", {})
+                # merge prepare memory
+                mems.update(prep_mems)
+                # define a forward peak as max of known forward subdivisions
+                forward_peak = 0
+                for k in [
+                    "mem/model/prepare_bytes",
+                    "mem/model/conditioner_bytes",
+                    "mem/model/encoder_bytes",
+                    "mem/model/latent_bytes",
+                    "mem/model/decoder_bytes",
+                ]:
+                    forward_peak = max(forward_peak, int(mems.get(k, 0)))
+                if forward_peak:
+                    mems["mem/forward_bytes"] = int(forward_peak)
+                model_outputs["memories"] = mems
             if not torch.isfinite(model_outputs["x_hat"]).all():
                 raise RuntimeError("NaN or Inf detected in model output 'x_hat'")
 
@@ -241,6 +336,11 @@ class CfdSimformerTrainer(SgdTrainer):
                 self._dump_done = True
 
             infos = {}
+            if record_memory:
+                mems = model_outputs.get("memories", {})
+                if mems:
+                    # expose in infos for the trainer to pick up (_memory)
+                    infos["memories"] = mems
             losses = {}
 
             timings = model_outputs.get("timings") if profile_flag else None
@@ -252,11 +352,26 @@ class CfdSimformerTrainer(SgdTrainer):
                     infos[f"timings/{name}"] = float(duration)
 
             # next timestep loss
+            loss_timer_start = time.perf_counter() if profile_flag else None
+            if record_memory and torch.cuda.is_available():
+                try:
+                    torch.cuda.reset_peak_memory_stats()
+                except Exception:
+                    pass
             x_hat_loss = self.trainer.loss_function(
                 prediction=model_outputs["x_hat"],
                 target=target,
                 reduction="none",
             )
+            if record_memory and torch.cuda.is_available():
+                torch.cuda.synchronize()
+                try:
+                    loss_peak = int(torch.cuda.max_memory_allocated())
+                except Exception:
+                    loss_peak = 0
+                mems = model_outputs.get("memories", {})
+                mems["mem/loss_bytes"] = int(loss_peak)
+                model_outputs["memories"] = mems
             if not torch.isfinite(x_hat_loss).all():
                 raise RuntimeError("NaN or Inf detected in loss before reduction")
             infos.update(
@@ -372,6 +487,9 @@ class CfdSimformerTrainer(SgdTrainer):
                     raise NotImplementedError
                 losses["dynamics_hat"] = dynamics_hat_loss
                 total_loss = total_loss + self.trainer.reconstruct_dynamics_weight * dynamics_hat_loss
+
+            if profile_flag and loss_timer_start is not None:
+                infos["timings/loss_ms"] = (time.perf_counter() - loss_timer_start) * 1000.0
 
             with torch.no_grad():
                 eps = torch.finfo(target.dtype).eps

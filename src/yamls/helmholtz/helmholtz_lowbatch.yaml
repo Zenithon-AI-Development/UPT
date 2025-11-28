@@ -1,12 +1,13 @@
-wandb: slot-upt-overfit
+wandb: newpt_logging
 name: helmholtz_baseline
 stage_name: helmholtz_lowbatch
+stage_id: helmholtz_lowbatch_v1
 
 vars:
   lr: 1.0e-3
   batch_size: 4  # Reduced from 4 to avoid OOM
   max_batch_size: 4
-  epochs: 500
+  epochs: 20
   num_latent_tokens: 256
   num_supernodes: 2048
   radius_graph_r: 5.0
@@ -85,5 +86,13 @@ trainer:
     loss_function:
       kind: mse_loss
   log_every_n_epochs: 1
+
+  # timing/profiling (disabled by default; enable for Helmholtz tests only)
+  timing:
+    enabled: true
+    sample_every_n_updates: 50
+    sample_first_n_per_epoch: 3
+    reduce: mean
+    file_format: pkl
 
 

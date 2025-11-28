@@ -22,6 +22,7 @@ from callbacks.default_callbacks.online_loss_callback import OnlineLossCallback
 from callbacks.default_callbacks.param_count_callback import ParamCountCallback
 from callbacks.default_callbacks.progress_callback import ProgressCallback
 from callbacks.default_callbacks.train_time_callback import TrainTimeCallback
+from callbacks.default_callbacks.timing_callback import TimingCallback
 from distributed.config import is_distributed, get_world_size
 from distributed.config import is_managed, get_rank, is_rank0
 from distributed.gather import all_gather_nograd
@@ -79,6 +80,8 @@ class SgdTrainer(nn.Module):
             initializer: ResumeInitializer = None,
             disable_gradient_accumulation: bool = False,
             max_batch_size: int = None,
+            # restrict number of samples used for training epoch sizing/debug runs
+            train_max_size: int = None,
             sync_batchnorm: bool = True,
             # find_unused_params should not be set to true if it is not needed (to avoid overhead)
             # but sometimes it is required (e.g. when dynamically freezing/unfreezing parameters)
@@ -94,7 +97,8 @@ class SgdTrainer(nn.Module):
             path_provider: PathProvider = None,
             **kwargs,
     ):
-        super().__init__(**kwargs)
+        #super().__init__(**kwargs)
+        super().__init__()
         self.logger = logging.getLogger(type(self).__name__)
         self.data_container = data_container
         self.config_provider = config_provider or NoopConfigProvider()
@@ -130,7 +134,12 @@ class SgdTrainer(nn.Module):
         self.track_every_n_samples = track_every_n_samples
         self.early_stopper = create(early_stopper, early_stopper_from_kwargs)
         self.main_sampler_kwargs = main_sampler_kwargs or {}
-        self.train_dataset, self.main_collator = self.data_container.get_dataset("train", mode=self.dataset_mode)
+        # allow capping the dataset length for fast debug runs
+        self.train_dataset, self.main_collator = self.data_container.get_dataset(
+            "train",
+            mode=self.dataset_mode,
+            max_size=train_max_size,
+        )
         self.main_sampler = self.data_container.get_main_sampler(
             train_dataset=self.train_dataset,
             **self.main_sampler_kwargs,
@@ -170,6 +179,10 @@ class SgdTrainer(nn.Module):
             updates_per_epoch=self.updates_per_epoch,
             effective_batch_size=self.effective_batch_size,
         )
+        # optional timing config (gated callback)
+        self.timing_cfg = kwargs.pop("timing", None)
+        # optional memory config (gated callback)
+        self.memory_cfg = kwargs.pop("memory", None)
         self.callbacks = create_collection(
             callbacks,
             callback_from_kwargs,
@@ -278,6 +291,20 @@ class SgdTrainer(nn.Module):
                 FreezerCallback(**default_kwargs, every_n_updates=self.track_every_n_updates),
                 OnlineLossCallback(**default_kwargs, every_n_updates=self.track_every_n_updates, verbose=False)
             ]
+            # add optional detailed timing callback
+            if isinstance(self.timing_cfg, dict) and self.timing_cfg.get("enabled", False):
+                timing_kwargs = dict(**default_kwargs, **default_intervals)
+                timing_kwargs.update(self.timing_cfg)
+                default_callbacks.append(TimingCallback(**timing_kwargs))
+            # add optional detailed memory callback
+            try:
+                from callbacks.default_callbacks.memory_callback import MemoryCallback  # lazy import
+                if isinstance(self.memory_cfg, dict) and self.memory_cfg.get("enabled", False):
+                    memory_kwargs = dict(**default_kwargs, **default_intervals)
+                    memory_kwargs.update(self.memory_cfg)
+                    default_callbacks.append(MemoryCallback(**memory_kwargs))
+            except Exception as _e:
+                self.logger.warning(f"MemoryCallback not available or failed to import: {_e}")
 
         for callback in default_callbacks:
             self.logger.info(f"added default {callback}")
@@ -590,17 +617,35 @@ class SgdTrainer(nn.Module):
                             _ = next(data_iter)
                         break
                     is_last_update_in_epoch = remaining_batches - accumulation_steps < accumulation_steps
+                    # per-effective-update memory peaks for non-microstep phases
+                    data_mem_bytes = 0
+                    optim_mem_bytes = 0
                     for callback in periodic_callbacks:
                         callback.before_every_update(update_counter=self.update_counter, model=model)
                     for _ in range(accumulation_steps):
                         # load next batch
                         with kp.named_profile("data_loading"):
+                            if torch.cuda.is_available():
+                                try:
+                                    torch.cuda.reset_peak_memory_stats()
+                                except Exception:
+                                    pass
                             batch = next(data_iter)
                             iter_step += 1
+                            if torch.cuda.is_available():
+                                torch.cuda.synchronize()
+                                try:
+                                    data_mem_bytes = max(
+                                        data_mem_bytes,
+                                        int(torch.cuda.max_memory_allocated()),
+                                    )
+                                except Exception:
+                                    pass
                         if iter_step % accumulation_steps == 0:
                             model.optim_schedule_step()
                             data_time = 0.
                             update_time = 0.
+                            optim_time = 0.
                         data_time += kp.profiler.last_node.last_time
                         for callback in periodic_callbacks:
                             callback.before_every_accumulation_step(model=model)
@@ -618,6 +663,12 @@ class SgdTrainer(nn.Module):
                                 is_first_update=is_first_update,
                             )
                         update_time += kp.profiler.last_node.last_time
+                        # extract per-microstep timings from update_outputs if present
+                        micro_timings = None
+                        micro_memory = None
+                        if isinstance(update_outputs, dict):
+                            micro_timings = update_outputs.get("_timing", None)
+                            micro_memory = update_outputs.get("_memory", None)
                         for callback in periodic_callbacks:
                             callback.track_after_accumulation_step(
                                 update_counter=self.update_counter,
@@ -626,11 +677,36 @@ class SgdTrainer(nn.Module):
                                 losses=losses,
                                 update_outputs=update_outputs,
                                 accumulation_steps=accumulation_steps,
+                                timings=micro_timings,
+                                memories=micro_memory,
                             )
                         # free references to tensors
                         # noinspection PyUnusedLocal
                         update_outputs = None
                         is_first_update = False
+
+                        # optimizer step at effective update boundary
+                        if (iter_step + 1) % accumulation_steps == 0:
+                            for callback in periodic_callbacks:
+                                callback.before_every_optim_step(model=model, total_loss=losses["total"])
+                            with kp.named_profile("optim_step"):
+                                if torch.cuda.is_available():
+                                    try:
+                                        torch.cuda.reset_peak_memory_stats()
+                                    except Exception:
+                                        pass
+                                model.optim_step(self.grad_scaler)
+                                model.optim_zero_grad()
+                                if torch.cuda.is_available():
+                                    torch.cuda.synchronize()
+                                    try:
+                                        optim_mem_bytes = max(
+                                            optim_mem_bytes,
+                                            int(torch.cuda.max_memory_allocated()),
+                                        )
+                                    except Exception:
+                                        pass
+                            optim_time += kp.profiler.last_node.last_time
 
                     # advance counter
                     self.update_counter.add_samples(self.effective_batch_size)
@@ -639,13 +715,28 @@ class SgdTrainer(nn.Module):
                         self.update_counter.next_epoch()
 
                     trainer_model.eval()
-                    times = dict(data_time=data_time, update_time=update_time)
+                    # pass both legacy keys (for TrainTimeCallback) and new ones (for TimingCallback)
+                    update_total = data_time + update_time + (optim_time if 'optim_time' in locals() else 0.0)
+                    times = dict(
+                        data_time=data_time,
+                        update_time=update_time,
+                        data_loading=data_time,
+                        optim_step=(optim_time if 'optim_time' in locals() else 0.0),
+                        update_total=update_total,
+                    )
+                    # memory peaks for non-microstep phases within this effective update
+                    mems = {}
+                    if data_mem_bytes:
+                        mems["mem/data_loading_bytes"] = int(data_mem_bytes)
+                    if optim_mem_bytes:
+                        mems["mem/optim_step_bytes"] = int(optim_mem_bytes)
                     for callback in periodic_callbacks:
                         callback.track_after_update_step(
                             update_counter=self.update_counter,
                             trainer=self,
                             model=model,
                             times=times,
+                            mems=mems,
                         )
                     for callback in periodic_callbacks:
                         callback.after_update(
@@ -748,10 +839,29 @@ class SgdTrainer(nn.Module):
     ):
         model.before_accumulation_step()
 
-        with kp.named_profile_async("forward"):
+        # Synchronously measure forward pass to capture GPU time accurately
+        with kp.named_profile("forward"):
             with self.autocast_context:
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+                    # reset peak mem to capture full forward allocation peak
+                    try:
+                        torch.cuda.reset_peak_memory_stats()
+                    except Exception:
+                        pass
                 losses, outputs = ddp_model(batch)
-            total_loss = losses["total"] / accumulation_steps
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+        # capture forward time from profiler (seconds)
+        forward_time = kp.profiler.last_node.last_time
+        # capture forward memory peak (bytes)
+        forward_mem_bytes = 0
+        if torch.cuda.is_available():
+            try:
+                forward_mem_bytes = int(torch.cuda.max_memory_allocated())
+            except Exception:
+                forward_mem_bytes = 0
+        total_loss = losses["total"] / accumulation_steps
 
         if not model.is_frozen:
             if self.exit_on_nan_loss and torch.isnan(total_loss):
@@ -759,8 +869,23 @@ class SgdTrainer(nn.Module):
                 raise RuntimeError("encountered NaN loss")
 
             # backward
-            with kp.named_profile_async("backward"):
+            with kp.named_profile("backward"):
+                if torch.cuda.is_available():
+                    try:
+                        torch.cuda.reset_peak_memory_stats()
+                    except Exception:
+                        pass
                 self.grad_scaler.scale(total_loss).backward()
+                if torch.cuda.is_available():
+                    torch.cuda.synchronize()
+            backward_time = kp.profiler.last_node.last_time
+            # backward memory peak
+            backward_mem_bytes = 0
+            if torch.cuda.is_available():
+                try:
+                    backward_mem_bytes = int(torch.cuda.max_memory_allocated())
+                except Exception:
+                    backward_mem_bytes = 0
             for callback in periodic_callbacks:
                 callback.after_every_backward(total_loss=total_loss)
 
@@ -776,6 +901,73 @@ class SgdTrainer(nn.Module):
                     callback.before_every_optim_step(model=model, total_loss=total_loss)
                 model.optim_step(self.grad_scaler)
                 model.optim_zero_grad()
+
+        # build per-microstep timing dict
+        timing_dict = {"time/forward": float(forward_time)}
+        if not model.is_frozen:
+            timing_dict["time/backward"] = float(backward_time)
+        # build per-microstep memory dict
+        memory_dict = {}
+        if forward_mem_bytes:
+            memory_dict["mem/forward_bytes"] = float(forward_mem_bytes)
+        # include inner model timings (model may return ms)
+        # extract inner timings from infos (flattened "timings/*" keys)
+        # map common keys from ms to seconds
+        if isinstance(outputs, dict):
+            enc_ms = outputs.get("timings/encoder_ms")
+            proc_ms = outputs.get("timings/processor_ms")
+            dec_ms = outputs.get("timings/decoder_ms")
+            loss_ms = outputs.get("timings/loss_ms")
+            cond_ms = outputs.get("timings/conditioner_ms")
+            prep_ms = outputs.get("timings/prepare_ms")
+            prep_to_device_ms = outputs.get("timings/prepare_to_device_ms")
+            graph_ms = outputs.get("timings/graph_ms")
+            if enc_ms is not None:
+                timing_dict["time/model/encoder"] = float(enc_ms) / 1000.0
+            if proc_ms is not None:
+                timing_dict["time/model/latent"] = float(proc_ms) / 1000.0
+            if dec_ms is not None:
+                timing_dict["time/model/decoder"] = float(dec_ms) / 1000.0
+            if loss_ms is not None:
+                timing_dict["time/loss"] = float(loss_ms) / 1000.0
+                # ensure forward excludes loss to avoid double counting
+                timing_dict["time/forward"] = max(
+                    0.0, timing_dict["time/forward"] - float(loss_ms) / 1000.0
+                )
+            if cond_ms is not None:
+                timing_dict["time/model/conditioner"] = float(cond_ms) / 1000.0
+            if prep_ms is not None:
+                timing_dict["time/model/prepare"] = float(prep_ms) / 1000.0
+            if prep_to_device_ms is not None:
+                timing_dict["time/model/prepare/to_device"] = float(prep_to_device_ms) / 1000.0
+            if graph_ms is not None:
+                timing_dict["time/model/prepare/graph"] = float(graph_ms) / 1000.0
+            # map fine-grained encoder subdivisions (e.g., timings/encoder/mesh_embed_ms)
+            for key, value in outputs.items():
+                if isinstance(key, str) and key.startswith("timings/encoder/"):
+                    suffix = key[len("timings/encoder/"):]  # e.g., mesh_embed_ms
+                    # normalize to drop unit suffix ("_ms") and convert to seconds
+                    name = suffix[:-3] if suffix.endswith("_ms") else suffix
+                    try:
+                        timing_dict[f"time/model/encoder/{name}"] = float(value) / 1000.0
+                    except Exception:
+                        pass
+            # collect microstep memory dict if present (bytes)
+            mems = outputs.get("memories")
+            if isinstance(mems, dict):
+                for k, v in mems.items():
+                    try:
+                        # ensure keys are strings and values floats
+                        memory_dict[str(k)] = float(v)
+                    except Exception:
+                        pass
+        # also attach backward memory from trainer scope
+        if not model.is_frozen and backward_mem_bytes:
+            memory_dict["mem/backward_bytes"] = float(backward_mem_bytes)
+        # attach timings for the outer loop to pick up
+        outputs["_timing"] = timing_dict
+        # attach memory for the outer loop to pick up
+        outputs["_memory"] = memory_dict
 
         return {k: v.detach().cpu() for k, v in losses.items()}, outputs
 

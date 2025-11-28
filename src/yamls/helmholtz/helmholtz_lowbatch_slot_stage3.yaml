@@ -135,3 +135,11 @@ trainer:
   track_every_n_updates: 1
   exit_on_nan_loss: false
 
+  # timing/profiling (disabled by default; enable for Helmholtz tests only)
+  timing:
+    enabled: false
+    sample_every_n_updates: 50
+    sample_first_n_per_epoch: 3
+    reduce: mean
+    file_format: pkl
+

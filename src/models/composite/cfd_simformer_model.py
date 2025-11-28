@@ -109,12 +109,14 @@ class CfdSimformerModel(CompositeModelBase):
             quadtree_supernodes=None,
             quadtree_subnodes=None,
             record_component_timings=False,
+            record_component_memory=False,
     ):
         outputs = {}
         timings = {} if record_component_timings else None
+        memories = {} if record_component_memory else None
 
         def _sync_tensor(tensor):
-            if not record_component_timings:
+            if not (record_component_timings or record_component_memory):
                 return
             if tensor is None:
                 return
@@ -126,7 +128,21 @@ class CfdSimformerModel(CompositeModelBase):
 
         # encode timestep t
         if self.conditioner is not None:
+            cond_start_time = time.perf_counter() if record_component_timings else None
+            if record_component_memory and torch.cuda.is_available():
+                try:
+                    torch.cuda.reset_peak_memory_stats()
+                except Exception:
+                    pass
             condition = self.conditioner(timestep=timestep, velocity=velocity)
+            _sync_tensor(condition)
+            if record_component_timings:
+                timings["conditioner_ms"] = _elapsed(cond_start_time)
+            if record_component_memory and torch.cuda.is_available():
+                try:
+                    memories["mem/model/conditioner_bytes"] = int(torch.cuda.max_memory_allocated())
+                except Exception:
+                    pass
         else:
             condition = None
         outputs["condition"] = condition
@@ -153,6 +169,11 @@ class CfdSimformerModel(CompositeModelBase):
             encoder_kwargs["quadtree_subnodes"] = quadtree_subnodes
         _sync_tensor(x)
         encoder_start_time = time.perf_counter() if record_component_timings else None
+        if record_component_memory and torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
         prev_dynamics = self.encoder(
             x,
             **encoder_kwargs,
@@ -164,10 +185,28 @@ class CfdSimformerModel(CompositeModelBase):
             if encoder_detail:
                 for name, duration in encoder_detail.items():
                     timings[f"encoder/{name}"] = float(duration)
+        if record_component_memory and torch.cuda.is_available():
+            try:
+                memories["mem/model/encoder_bytes"] = int(torch.cuda.max_memory_allocated())
+            except Exception:
+                pass
+            # try to fetch encoder-internal memories if available
+            encoder_mem_detail = getattr(self.encoder, "_last_memories", None)
+            if isinstance(encoder_mem_detail, dict):
+                for name, peak_bytes in encoder_mem_detail.items():
+                    try:
+                        memories[f"mem/model/encoder/{name}_bytes"] = int(peak_bytes)
+                    except Exception:
+                        pass
         outputs["prev_dynamics"] = prev_dynamics
 
         # predict current latent (dynamic_{t-1} -> dynamic_t)
         latent_start_time = time.perf_counter() if record_component_timings else None
+        if record_component_memory and torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
         dynamics = self.latent(
             prev_dynamics,
             condition=condition,
@@ -176,6 +215,11 @@ class CfdSimformerModel(CompositeModelBase):
         _sync_tensor(dynamics)
         if record_component_timings:
             timings["processor_ms"] = _elapsed(latent_start_time)
+        if record_component_memory and torch.cuda.is_available():
+            try:
+                memories["mem/model/latent_bytes"] = int(torch.cuda.max_memory_allocated())
+            except Exception:
+                pass
         outputs["dynamics"] = dynamics
 
         def _decode(latent_tensor, query_tensor, condition_tensor):
@@ -202,6 +246,11 @@ class CfdSimformerModel(CompositeModelBase):
 
         # decode next_latent to next_data (dynamic_t -> x_t)
         decoder_start_time = time.perf_counter() if record_component_timings else None
+        if record_component_memory and torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
         if self.force_decoder_fp32:
             with torch.autocast(device_type=str(dynamics.device).split(":")[0], enabled=False):
                 x_hat, stats_pred, mask_logits = _decode(
@@ -218,6 +267,11 @@ class CfdSimformerModel(CompositeModelBase):
         _sync_tensor(x_hat)
         if record_component_timings:
             timings["decoder_ms"] = _elapsed(decoder_start_time)
+        if record_component_memory and torch.cuda.is_available():
+            try:
+                memories["mem/model/decoder_bytes"] = int(torch.cuda.max_memory_allocated())
+            except Exception:
+                pass
         outputs["x_hat"] = x_hat
         if stats_pred is not None:
             outputs["supernode_stats_pred"] = stats_pred
@@ -225,6 +279,8 @@ class CfdSimformerModel(CompositeModelBase):
             outputs["supernode_mask_logits"] = mask_logits
         if record_component_timings:
             outputs["timings"] = timings
+        if record_component_memory:
+            outputs["memories"] = memories
 
         # reconstruct dynamics_t from (x_{t-1}, \hat{x}_t)
         if reconstruct_dynamics:

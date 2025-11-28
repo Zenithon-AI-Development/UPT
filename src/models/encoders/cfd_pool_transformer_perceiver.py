@@ -91,10 +91,22 @@ class CfdPoolTransformerPerceiver(SingleModelBase):
 
     def forward(self, x, mesh_pos, mesh_edges, batch_idx, condition=None, static_tokens=None):
         timings = {}
+        memories = {}
         # embed mesh
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
         start = time.perf_counter()
         x = self.mesh_embed(x, mesh_pos=mesh_pos, mesh_edges=mesh_edges, batch_idx=batch_idx)
         timings["mesh_embed_ms"] = (time.perf_counter() - start) * 1000.0
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            try:
+                memories["mesh_embed"] = int(torch.cuda.max_memory_allocated())
+            except Exception:
+                pass
 
         # project static_tokens to encoder dim
         # static_tokens = self.static_token_proj(static_tokens)
@@ -105,30 +117,86 @@ class CfdPoolTransformerPerceiver(SingleModelBase):
         block_kwargs = {}
         if condition is not None:
             block_kwargs["cond"] = condition
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
         start = time.perf_counter()
         x = self.enc_norm(x)
         timings["enc_norm_ms"] = (time.perf_counter() - start) * 1000.0
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            try:
+                memories["enc_norm"] = int(torch.cuda.max_memory_allocated())
+            except Exception:
+                pass
 
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
         start = time.perf_counter()
         x = self.enc_proj(x)
         timings["enc_proj_ms"] = (time.perf_counter() - start) * 1000.0
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            try:
+                memories["enc_proj"] = int(torch.cuda.max_memory_allocated())
+            except Exception:
+                pass
 
         blocks_total = 0.0
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
         for blk in self.blocks:
             start = time.perf_counter()
             x = blk(x, **block_kwargs)
             blocks_total += (time.perf_counter() - start) * 1000.0
         if self.blocks:
             timings["transformer_blocks_ms"] = blocks_total
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            try:
+                memories["transformer_blocks"] = int(torch.cuda.max_memory_allocated())
+            except Exception:
+                pass
 
         # perceiver
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
         start = time.perf_counter()
         x = self.perc_proj(x)
         timings["perc_proj_ms"] = (time.perf_counter() - start) * 1000.0
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            try:
+                memories["perc_proj"] = int(torch.cuda.max_memory_allocated())
+            except Exception:
+                pass
 
+        if torch.cuda.is_available():
+            try:
+                torch.cuda.reset_peak_memory_stats()
+            except Exception:
+                pass
         start = time.perf_counter()
         x = self.perceiver(kv=x, **block_kwargs)
         timings["perceiver_ms"] = (time.perf_counter() - start) * 1000.0
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+            try:
+                memories["perceiver"] = int(torch.cuda.max_memory_allocated())
+            except Exception:
+                pass
 
         self._last_timings = timings
+        self._last_memories = memories
         return x
