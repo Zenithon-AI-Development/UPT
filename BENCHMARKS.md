@@ -35,7 +35,6 @@ This document contains benchmarking results for various model architectures trai
 ### Notes
 
 - All timing measurements are in seconds unless otherwise specified
-- Inference times are per-sample averages in milliseconds
 - Convergence times are measured from training start to first epoch where the threshold is reached
 - Time per epoch is averaged over all training epochs
 - Parameters count includes all trainable parameters in the model
