@@ -41,7 +41,21 @@ This document contains benchmarking results for various model architectures trai
 
 ## Benchmark Results
 
+### turbulent_radiative_layer_2D
+
 | Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch - Encoder (s) | Time/Epoch - Processor (s) | Time/Epoch - Decoder (s) | Time to 50% Error (s) | Time to 20% Error (s) | Time to 10% Error (s) | Time to 5% Error (s) | # Parameters | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|---------------------------|----------------------------|--------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
-|       |         |           |         |               |               |                           |                            |                          |                      |                      |                     |                     |               |                           |                            |                          |
+| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | | | |
+
+### helmholtz_staircase
+
+| Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch - Encoder (s) | Time/Epoch - Processor (s) | Time/Epoch - Decoder (s) | Time to 50% Error (s) | Time to 20% Error (s) | Time to 10% Error (s) | Time to 5% Error (s) | # Parameters | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
+|-------|---------|-----------|---------|---------------|---------------|---------------------------|----------------------------|--------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
+| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | | | |
+
+### Zpinch (multiple resolutions on uniform grids)
+
+| Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch - Encoder (s) | Time/Epoch - Processor (s) | Time/Epoch - Decoder (s) | Time to 50% Error (s) | Time to 20% Error (s) | Time to 10% Error (s) | Time to 5% Error (s) | # Parameters | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
+|-------|---------|-----------|---------|---------------|---------------|---------------------------|----------------------------|--------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
+| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | | | |
 
