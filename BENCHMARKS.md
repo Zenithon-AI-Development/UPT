@@ -57,6 +57,5 @@ This document contains benchmarking results for various model architectures trai
 
 | Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch - Encoder (s) | Time/Epoch - Processor (s) | Time/Epoch - Decoder (s) | Time to 50% Error (s) | Time to 20% Error (s) | Time to 10% Error (s) | Time to 5% Error (s) | # Parameters (Cond/Enc/Proc/Dec) | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|---------------------------|----------------------------|--------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
-| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 29.7 % | 15.4% |  |  |  |  | - | - | - | 8,845,927 (738816,
-(2859936, 2697024, 2550151) | | | |
+| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 29.7% | 15.4% |  |  |  |  | - | - | - | 8.845.927 (738.816, 2.859.936, 2.697.024, 2.550.151) | | | |
 
