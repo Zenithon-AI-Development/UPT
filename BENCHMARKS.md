@@ -55,7 +55,8 @@ This document contains benchmarking results for various model architectures trai
 
 ### Zpinch (multiple resolutions on uniform grids)
 
-| Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch - Encoder (s) | Time/Epoch - Processor (s) | Time/Epoch - Decoder (s) | Time to 50% Error (s) | Time to 20% Error (s) | Time to 10% Error (s) | Time to 5% Error (s) | # Parameters | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
+| Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch - Encoder (s) | Time/Epoch - Processor (s) | Time/Epoch - Decoder (s) | Time to 50% Error (s) | Time to 20% Error (s) | Time to 10% Error (s) | Time to 5% Error (s) | # Parameters (Cond/Enc/Proc/Dec) | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|---------------------------|----------------------------|--------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
-| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | | | |
+| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 29.7 % | 15.4% |  |  |  |  | - | - | - | 8,845,927 (738816,
+(2859936, 2697024, 2550151) | | | |
 
