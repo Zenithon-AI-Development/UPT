@@ -127,6 +127,8 @@ class WellTrl2dDataset(DatasetBase):
 
         self.clamp = None if clamp in (None, 0, 0.0) else float(clamp)
         self.clamp_mode = clamp_mode
+        if norm == "mean0std1_onfly_overfit":
+            self.clamp = None
         self.eps = 1e-6
 
         self._mesh_pos_xy = self._build_mesh(grid_scaling)
@@ -147,6 +149,14 @@ class WellTrl2dDataset(DatasetBase):
                     )
                 stats = torch.load(stats_path)
                 self._load_stats(stats)
+            self._stats_mode = "mean0std1"
+        elif norm == "mean0std1_onfly":
+            stats = self._compute_dataset_stats()
+            self._load_stats(stats)
+            self._stats_mode = "mean0std1"
+        elif norm == "mean0std1_onfly_overfit":
+            stats = self._compute_overfit_stats()
+            self._load_stats(stats)
             self._stats_mode = "mean0std1"
         else:
             # identity stats (no normalization)
@@ -209,6 +219,25 @@ class WellTrl2dDataset(DatasetBase):
             "std": std.to(torch.float32),
         }
 
+    def _compute_overfit_stats(self) -> dict:
+        """Compute stats from first sample only (for overfitting test)."""
+        if len(self._indices) == 0:
+            raise RuntimeError("No samples available for overfit stats computation.")
+        idx = self._indices[0]
+        
+        sample = self.well[idx]
+        input_fields = torch.as_tensor(sample["input_fields"], dtype=torch.float64)
+        output_fields = torch.as_tensor(sample["output_fields"], dtype=torch.float64)
+        combined = torch.cat([input_fields, output_fields], dim=0)
+        flat = combined.reshape(-1, self.C)
+        
+        mean = flat.mean(dim=0).to(torch.float32)
+        std = flat.std(dim=0, unbiased=True).to(torch.float32).clamp_min(self.eps)
+        return {
+            "mean": mean,
+            "std": std,
+        }
+
     @staticmethod
     def _update_stats(count, mean, m2, batch):
         batch_count = batch.shape[0]
@@ -242,7 +271,9 @@ class WellTrl2dDataset(DatasetBase):
     def getitem_timestep(self, idx, ctx=None):
         if self._rollout:
             return torch.tensor(0, dtype=torch.long)
-        return torch.tensor(idx % self._num_transitions, dtype=torch.long)
+        actual_idx = self._indices[int(idx)]
+        timestep_val = actual_idx % self._num_transitions
+        return torch.tensor(timestep_val, dtype=torch.long)
 
     def getitem_all_pos(self, idx, ctx=None):
         return self._mesh_pos_xy
@@ -303,6 +334,60 @@ class WellTrl2dDataset(DatasetBase):
 
     def getitem_reconstruction_output(self, idx, ctx=None):
         return self.getitem_target(idx, ctx)
+
+    def getitem_cond_vec(self, idx, ctx=None):
+        return torch.empty(0, dtype=torch.float32)
+
+    def getshape_cond_vec(self):
+        return (0,)
+
+    def getitem_target_h1(self, idx, ctx=None):
+        result = self.getitem_target(idx, ctx)
+        # Debug: verify shape
+        if idx == 0:
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[DATASET DEBUG] getitem_target_h1(idx={idx}): shape={result.shape}, numel={result.numel()}, ndim={result.ndim}, C={self.C}, H*W={self.H*self.W}")
+        return result
+
+    def getshape_target_h1(self):
+        return self.getshape_target()
+
+    def getitem_target_h5(self, idx, ctx=None):
+        return self.getitem_target(idx, ctx)
+
+    def getshape_target_h5(self):
+        return self.getshape_target()
+
+    def getitem_scalar_target_h1(self, idx, ctx=None):
+        return torch.empty(0, dtype=torch.float32)
+
+    def getshape_scalar_target_h1(self):
+        return (0,)
+
+    def getitem_scalar_target_h5(self, idx, ctx=None):
+        return torch.empty(0, dtype=torch.float32)
+
+    def getshape_scalar_target_h5(self):
+        return (0,)
+
+    def getitem_input_fields(self, idx, ctx=None):
+        sample = self._item(idx)
+        input_fields = torch.as_tensor(sample["input_fields"], dtype=torch.float32)
+        input_fields = self._apply_norm(input_fields)
+        return input_fields
+
+    def getshape_input_fields(self):
+        return (4, self.H, self.W, self.C)
+
+    def getitem_output_fields(self, idx, ctx=None):
+        sample = self._item(idx)
+        output_fields = torch.as_tensor(sample["output_fields"], dtype=torch.float32)
+        output_fields = self._apply_norm(output_fields)
+        return output_fields
+
+    def getshape_output_fields(self):
+        return (1, self.H, self.W, self.C)
 
     def _apply_norm(self, tensor: torch.Tensor) -> torch.Tensor:
         if self._stats_mode != "mean0std1":

@@ -21,11 +21,19 @@ class MetricEarlyStopper(EarlyStopperBase):
     def _should_stop(self):
         writer = CallbackBase.log_writer_singleton
         assert writer is not None
-        assert self.metric_key in writer.log_cache, (
-            f"couldn't find metric_key {self.metric_key} (valid metric_keys={writer.log_cache.keys()}) -> "
-            "make sure every_n_epochs/every_n_updates/every_n_samples is aligned with the corresponding callback"
-        )
-        cur_metric = writer.log_cache[self.metric_key]
+        # Try metric key with epoch suffix first (as logged by UpdateOutputCallback)
+        metric_key_with_suffix = f"{self.metric_key}/{self.to_short_interval_string()}"
+        if metric_key_with_suffix in writer.log_cache:
+            metric_key_to_use = metric_key_with_suffix
+        elif self.metric_key in writer.log_cache:
+            metric_key_to_use = self.metric_key
+        else:
+            assert False, (
+                f"couldn't find metric_key {self.metric_key} or {metric_key_with_suffix} "
+                f"(valid metric_keys={writer.log_cache.keys()}) -> "
+                "make sure every_n_epochs/every_n_updates/every_n_samples is aligned with the corresponding callback"
+            )
+        cur_metric = writer.log_cache[metric_key_to_use]
 
         if self._metric_improved(cur_metric):
             self.logger.info(f"{self.metric_key} improved: {self.best_metric} --> {cur_metric}")

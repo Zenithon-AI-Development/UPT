@@ -90,9 +90,16 @@ trainer:
   # timing/profiling (disabled by default; enable for Helmholtz tests only)
   timing:
     enabled: true
-    sample_every_n_updates: 50
+    sample_every_n_updates: 5
     sample_first_n_per_epoch: 3
     reduce: mean
+    file_format: pkl
+
+  memory:
+    enabled: true
+    sample_every_n_updates: 5
+    sample_first_n_per_epoch: 3
+    reduce: max
     file_format: pkl
 
 

@@ -1,4 +1,4 @@
-# src/datasets/well_trl2d_dataset.py
+# src/datasets/well_hs_dataset.py
 from pathlib import Path
 import hashlib
 import torch
@@ -73,6 +73,8 @@ class WellHsDataset(DatasetBase):
         else:
             n_steps_input = int(num_input_timesteps)
             n_steps_output = int(num_output_timesteps)
+        self._n_steps_input = n_steps_input
+        self._n_steps_output = n_steps_output
 
         self._stats_mode = norm
         base_path = Path(well_base_path)
@@ -154,6 +156,15 @@ class WellHsDataset(DatasetBase):
                 self.mean = data["mean"].to(torch.float32)
                 self.std = data["std"].to(torch.float32)
             stats_mode = "mean0std1"
+        elif norm == "mean0std1_onfly":
+            self.mean, self.std = self._compute_dataset_stats()
+            self.std = self.std.clamp_min(self.eps)
+            stats_mode = "mean0std1"
+        elif norm == "mean0std1_onfly_overfit":
+            self.clamp = None
+            self.mean, self.std = self._compute_overfit_stats()
+            self.std = self.std.clamp_min(self.eps)
+            stats_mode = "mean0std1"
 
         if stats_mode == "mean0std1":
             if getattr(self, "mean", None) is None or getattr(self, "std", None) is None:
@@ -203,6 +214,22 @@ class WellHsDataset(DatasetBase):
         var = M2 / max(count - 1, 1)
         std = var.sqrt().clamp_min(self.eps)
         return mean.to(torch.float32), std.to(torch.float32)
+
+    def _compute_overfit_stats(self):
+        """Compute stats from first sample only (for overfitting test)."""
+        if len(self._indices) == 0:
+            raise RuntimeError("No samples available for overfit stats computation.")
+        idx = self._indices[0]
+        
+        sample = self._item(idx)
+        input_fields = torch.as_tensor(sample["input_fields"], dtype=torch.float64)
+        output_fields = torch.as_tensor(sample["output_fields"], dtype=torch.float64)
+        combined = torch.cat([input_fields, output_fields], dim=0)
+        flat = combined.reshape(-1, self.F)
+        
+        mean = flat.mean(dim=0).to(torch.float32)
+        std = flat.std(dim=0, unbiased=True).to(torch.float32).clamp_min(self.eps)
+        return mean, std
 
     def _apply_norm(self, tensor: torch.Tensor) -> torch.Tensor:
         if self._stats_mode != "mean0std1":
@@ -257,6 +284,12 @@ class WellHsDataset(DatasetBase):
     def getitem_velocity(self, idx, ctx=None):   return self._velocity_dummy
     def getshape_velocity(self):                 return ()
 
+    def getitem_cond_vec(self, idx, ctx=None):
+        return torch.empty(0, dtype=torch.float32)
+
+    def getshape_cond_vec(self):
+        return (0,)
+
     # data
     def getitem_x(self, idx, ctx=None):
         it = self._item(idx)
@@ -283,6 +316,30 @@ class WellHsDataset(DatasetBase):
             y = einops.rearrange(y, "t h w c -> (h w) (t c)")
         return self._clamp_if_needed(y)
 
+    def getitem_target_h1(self, idx, ctx=None):
+        return self.getitem_target(idx, ctx)
+
+    def getshape_target_h1(self):
+        return self.getshape_target()
+
+    def getitem_target_h5(self, idx, ctx=None):
+        return self.getitem_target(idx, ctx)
+
+    def getshape_target_h5(self):
+        return self.getshape_target()
+
+    def getitem_scalar_target_h1(self, idx, ctx=None):
+        return torch.empty(0, dtype=torch.float32)
+
+    def getshape_scalar_target_h1(self):
+        return (0,)
+
+    def getitem_scalar_target_h5(self, idx, ctx=None):
+        return torch.empty(0, dtype=torch.float32)
+
+    def getshape_scalar_target_h5(self):
+        return (0,)
+
     # convenient alias (sometimes used by callbacks)
     def getitem_target_t0(self, idx, ctx=None):
         it = self._item(idx)
@@ -306,6 +363,25 @@ class WellHsDataset(DatasetBase):
     # (optional) reconstruction aliases
     def getitem_reconstruction_input(self, idx, ctx=None):  return self.getitem_target(idx, ctx)
     def getitem_reconstruction_output(self, idx, ctx=None): return self.getitem_target(idx, ctx)
+
+    # For quadtree collator
+    def getshape_input_fields(self):
+        return (self._n_steps_input, self.H, self.W, self.F)
+
+    def getshape_output_fields(self):
+        return (1, self.H, self.W, self.F)
+
+    def getitem_input_fields(self, idx, ctx=None):
+        sample = self._item(idx)
+        x = torch.as_tensor(sample["input_fields"], dtype=torch.float32)
+        x = self._apply_norm(x)
+        return self._clamp_if_needed(x)
+
+    def getitem_output_fields(self, idx, ctx=None):
+        sample = self._item(idx)
+        y = torch.as_tensor(sample["output_fields"], dtype=torch.float32)
+        y = self._apply_norm(y)
+        return self._clamp_if_needed(y)
 
     # clamping identical to CFD utility
     def _clamp_if_needed(self, data: torch.Tensor):

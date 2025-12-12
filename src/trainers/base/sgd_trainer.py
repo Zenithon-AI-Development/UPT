@@ -879,6 +879,25 @@ class SgdTrainer(nn.Module):
                 if torch.cuda.is_available():
                     torch.cuda.synchronize()
             backward_time = kp.profiler.last_node.last_time
+            # DEBUG: Check gradients after backward
+            if self.update_counter.update <= 3:
+                grad_norms = {}
+                grad_counts = {"zero": 0, "nan": 0, "inf": 0, "finite": 0}
+                for name, param in model.named_parameters():
+                    if param.grad is not None:
+                        grad_norm = param.grad.norm().item()
+                        grad_norms[name] = grad_norm
+                        if grad_norm == 0:
+                            grad_counts["zero"] += 1
+                        elif torch.isnan(param.grad).any():
+                            grad_counts["nan"] += 1
+                        elif torch.isinf(param.grad).any():
+                            grad_counts["inf"] += 1
+                        else:
+                            grad_counts["finite"] += 1
+                    else:
+                        grad_counts["zero"] += 1
+                self.logger.info(f"[DEBUG GRAD] Update {self.update_counter.update}: grad_stats={grad_counts}, sample_grad_norms={dict(list(grad_norms.items())[:5])}")
             # backward memory peak
             backward_mem_bytes = 0
             if torch.cuda.is_available():
@@ -928,6 +947,10 @@ class SgdTrainer(nn.Module):
                 timing_dict["time/model/latent"] = float(proc_ms) / 1000.0
             if dec_ms is not None:
                 timing_dict["time/model/decoder"] = float(dec_ms) / 1000.0
+            # scalar head timing (gyro)
+            scalar_ms = outputs.get("timings/scalar_head_ms")
+            if scalar_ms is not None:
+                timing_dict["time/model/scalar_head"] = float(scalar_ms) / 1000.0
             if loss_ms is not None:
                 timing_dict["time/loss"] = float(loss_ms) / 1000.0
                 # ensure forward excludes loss to avoid double counting
@@ -950,6 +973,25 @@ class SgdTrainer(nn.Module):
                     name = suffix[:-3] if suffix.endswith("_ms") else suffix
                     try:
                         timing_dict[f"time/model/encoder/{name}"] = float(value) / 1000.0
+                    except Exception:
+                        pass
+                # map dual-horizon decoder timings if present: timings/decoder_h1_ms, timings/decoder_h5_ms
+                if isinstance(key, str) and key.startswith("timings/decoder_") and key.endswith("_ms"):
+                    try:
+                        # expected formats: decoder_h1_ms, decoder_h5_ms
+                        sub = key[len("timings/decoder_"):-3]
+                        # skip aggregate key "decoder_ms" to avoid creating "time/model/decoder/" entries
+                        if sub:
+                            timing_dict[f"time/model/decoder/{sub}"] = float(value) / 1000.0
+                    except Exception:
+                        pass
+                # map dual-horizon scalar head timings if present: timings/scalar_head_h1_ms, timings/scalar_head_h5_ms
+                if isinstance(key, str) and key.startswith("timings/scalar_head_") and key.endswith("_ms"):
+                    try:
+                        sub = key[len("timings/scalar_head_"):-3]
+                        # skip aggregate key "scalar_head_ms" to avoid creating "time/model/scalar_head/" entries
+                        if sub:
+                            timing_dict[f"time/model/scalar_head/{sub}"] = float(value) / 1000.0
                     except Exception:
                         pass
             # collect microstep memory dict if present (bytes)

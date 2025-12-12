@@ -84,6 +84,8 @@ class CfdSimformerCollator(KDSingleCollator):
         query_pos = []
         query_lens = []
         target = []
+        target_h1 = []
+        target_h5 = []
         for i in range(len(batch)):
             query_pos_item = ModeWrapper.get_item(mode=dataset_mode, batch=batch[i], item="query_pos")
             target_item = ModeWrapper.get_item(mode=dataset_mode, batch=batch[i], item="target")
@@ -91,8 +93,68 @@ class CfdSimformerCollator(KDSingleCollator):
             query_lens.append(len(query_pos_item))
             query_pos.append(query_pos_item)
             target.append(target_item)
+            # Also handle dual-horizon field targets if present
+            if ModeWrapper.has_item(mode=dataset_mode, item="target_h1"):
+                target_h1_item = ModeWrapper.get_item(mode=dataset_mode, batch=batch[i], item="target_h1")
+                # Aggressive debug for first batch
+                if i == 0:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.info(f"[COLLATOR DEBUG] batch[{i}]: target_h1_item.shape={target_h1_item.shape}, numel={target_h1_item.numel()}, ndim={target_h1_item.ndim}")
+                    logger.info(f"[COLLATOR DEBUG] batch[{i}]: target_item.shape={target_item.shape}, numel={target_item.numel()}, ndim={target_item.ndim}")
+                    logger.info(f"[COLLATOR DEBUG] batch[{i}]: query_pos_item.shape={query_pos_item.shape if hasattr(query_pos_item, 'shape') else 'N/A'}")
+                target_h1.append(target_h1_item)
+            if ModeWrapper.has_item(mode=dataset_mode, item="target_h5"):
+                target_h5_item = ModeWrapper.get_item(mode=dataset_mode, batch=batch[i], item="target_h5")
+                target_h5.append(target_h5_item)
         collated_batch["query_pos"] = pad_sequence(query_pos, batch_first=True)
         collated_batch["target"] = torch.concat(target)
+        if len(target_h1) > 0:
+            collated_target_h1 = torch.concat(target_h1)
+            # Aggressive debug logging
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info(f"[COLLATOR] After concat: collated_target_h1.shape={collated_target_h1.shape}, numel={collated_target_h1.numel()}, ndim={collated_target_h1.ndim}")
+            logger.info(f"[COLLATOR] target.shape={collated_batch['target'].shape}, numel={collated_batch['target'].numel()}, ndim={collated_batch['target'].ndim}")
+            if len(target_h1) > 0:
+                logger.info(f"[COLLATOR] target_h1[0].shape={target_h1[0].shape}, numel={target_h1[0].numel()}, ndim={target_h1[0].ndim}")
+            # Ensure target_h1 has same channel dimension as target
+            target_C = collated_batch["target"].shape[1] if collated_batch["target"].ndim == 2 else None
+            if target_C is not None:
+                if collated_target_h1.ndim == 1:
+                    # 1D tensor - reshape to match target
+                    if collated_target_h1.numel() % target_C == 0:
+                        N = collated_target_h1.numel() // target_C
+                        collated_target_h1 = collated_target_h1.view(N, target_C)
+                    else:
+                        # Missing channels - expand
+                        N = collated_target_h1.numel()
+                        collated_target_h1 = collated_target_h1.unsqueeze(1).repeat(1, target_C)
+                elif collated_target_h1.ndim == 2:
+                    if collated_target_h1.shape[1] == 1 and target_C > 1:
+                        # Missing channels - repeat
+                        old_shape = collated_target_h1.shape
+                        collated_target_h1 = collated_target_h1.repeat(1, target_C)
+                        if len(target_h1) == 1:
+                            logger.info(f"[COLLATOR FIX] Expanded target_h1 from {old_shape} to {collated_target_h1.shape}")
+            if len(target_h1) == 1:
+                logger.info(f"[COLLATOR] After fix: collated_target_h1.shape={collated_target_h1.shape}")
+            collated_batch["target_h1"] = collated_target_h1
+        if len(target_h5) > 0:
+            collated_target_h5 = torch.concat(target_h5)
+            # Same fix for target_h5
+            if collated_target_h5.ndim == 1:
+                target_C = collated_batch["target"].shape[1] if collated_batch["target"].ndim == 2 else None
+                if target_C is not None and collated_target_h5.numel() % target_C == 0:
+                    N = collated_target_h5.numel() // target_C
+                    collated_target_h5 = collated_target_h5.view(N, target_C)
+                elif target_C is not None:
+                    N = collated_target_h5.numel()
+                    collated_target_h5 = collated_target_h5.unsqueeze(1).repeat(1, target_C)
+            elif collated_target_h5.ndim == 2 and collated_batch["target"].ndim == 2:
+                if collated_target_h5.shape[1] == 1 and collated_batch["target"].shape[1] > 1:
+                    collated_target_h5 = collated_target_h5.repeat(1, collated_batch["target"].shape[1])
+            collated_batch["target_h5"] = collated_target_h5
 
         # create unbatch_idx tensors (unbatch via torch_geometrics.utils.unbatch)
         # e.g. batch_size=2, num_points=[2, 3] -> unbatch_idx=[0, 0, 1, 2, 2, 2] unbatch_select=[0, 2]
