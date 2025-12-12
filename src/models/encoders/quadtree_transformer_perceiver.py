@@ -17,11 +17,10 @@ class QuadtreeTransformerPerceiver(SingleModelBase):
     
     Flow:
     1. Embed quadtree nodes (features + positions + depth) -> [B, N, embed_dim]
-    2. (Optional) Apply transformer blocks with masking -> [B, N, enc_dim]
+    2. Apply transformer blocks with masking -> [B, N, enc_dim]
     3. PerceiverPoolingBlock compresses to fixed size -> [B, num_latent_tokens, perc_dim]
     
     This skips the supernode concept entirely and processes all quadtree nodes directly.
-    Transformer blocks are optional - PerceiverPoolingBlock can compress directly from embedded nodes.
     Supports quadtree dict format from SHINE_mapping/quadtree with point_hierarchies, pyramids, features.
     """
     
@@ -39,7 +38,6 @@ class QuadtreeTransformerPerceiver(SingleModelBase):
         init_weights="xavier_uniform",
         use_positional_embedding=True,
         max_quadtree_level=16,
-        use_transformer_blocks=True,
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -55,11 +53,10 @@ class QuadtreeTransformerPerceiver(SingleModelBase):
         self.init_weights = init_weights
         self.use_positional_embedding = use_positional_embedding
         self.max_quadtree_level = max_quadtree_level
-        self.use_transformer_blocks = use_transformer_blocks
 
         # Input shape is (None, input_dim) for variable-length sequences
         _, input_dim = self.input_shape
-        ndim = self.data_container.get_dataset().metadata.get("dim", 2)
+        ndim = 2
         self.static_ctx["ndim"] = ndim
 
         # Node embedding: project features to embed_dim
@@ -81,23 +78,21 @@ class QuadtreeTransformerPerceiver(SingleModelBase):
         # Project to encoder dimension
         self.enc_proj = LinearProjection(embed_dim, enc_dim)
         
-        # Transformer blocks (optional - not required for compression, only for self-attention processing)
-        if use_transformer_blocks:
-            if "condition_dim" in self.static_ctx:
-                block_ctor = partial(DitBlock, cond_dim=self.static_ctx["condition_dim"])
-            else:
-                block_ctor = PrenormBlock
-            self.blocks = nn.ModuleList([
-                block_ctor(
-                    dim=enc_dim,
-                    num_heads=enc_num_attn_heads,
-                    init_weights=init_weights,
-                    drop_path=drop_path_rate
-                )
-                for _ in range(enc_depth)
-            ])
-        else:
-            self.blocks = None
+        # Transformer blocks (disabled - not used)
+        # if "condition_dim" in self.static_ctx:
+        #     block_ctor = partial(DitBlock, cond_dim=self.static_ctx["condition_dim"])
+        # else:
+        #     block_ctor = PrenormBlock
+        # self.blocks = nn.ModuleList([
+        #     block_ctor(
+        #         dim=enc_dim,
+        #         num_heads=enc_num_attn_heads,
+        #         init_weights=init_weights,
+        #         drop_path=drop_path_rate
+        #     )
+        #     for _ in range(enc_depth)
+        # ])
+        self.blocks = None
 
         # Perceiver pooling
         self.perc_proj = LinearProjection(enc_dim, perc_dim)
@@ -162,26 +157,36 @@ class QuadtreeTransformerPerceiver(SingleModelBase):
             features = quadtree_dict['features']  # (M, C)
             max_level = pyramids.shape[1] - 1
             
-            # Vectorized conversion: build level assignment vector first
-            M = point_hier.shape[0]
-            device = point_hier.device
-            node_depths = torch.zeros(M, dtype=torch.float32, device=device)
+            # Convert integer coordinates to [-1, 1] range
+            # Integer coords are at different levels, need to convert based on level
+            node_positions_list = []
+            node_depths_list = []
             
-            # Assign depth to each node based on pyramid indices
             for level in range(max_level + 1):
                 start_idx = int(pyramids[1, level].item())
                 if level < max_level:
                     end_idx = int(pyramids[1, level + 1].item())
                 else:
-                    end_idx = M
+                    end_idx = point_hier.shape[0]
+                
                 if end_idx > start_idx:
-                    node_depths[start_idx:end_idx] = level
+                    level_nodes = point_hier[start_idx:end_idx]  # (N_level, 2)
+                    # Convert integer coords to [-1, 1] range
+                    # At level L, coords are in [0, 2^L), convert to [-1, 1]
+                    level_coords_float = (level_nodes.float() / (2 ** level)) * 2.0 - 1.0
+                    node_positions_list.append(level_coords_float)
+                    node_depths_list.append(torch.full((level_nodes.shape[0],), level, dtype=torch.float32, device=point_hier.device))
             
-            # Vectorized coordinate conversion using depth information
-            # At level L, coords are in [0, 2^L), convert to [-1, 1]
-            level_powers = 2.0 ** node_depths  # (M,)
-            node_positions = (point_hier.float() / level_powers.unsqueeze(-1)) * 2.0 - 1.0  # (M, 2)
-            x = features  # (M, C)
+            if node_positions_list:
+                node_positions = torch.cat(node_positions_list, dim=0)  # (M, 2)
+                node_depths = torch.cat(node_depths_list, dim=0)  # (M,)
+                x = features  # (M, C)
+            else:
+                # Empty quadtree
+                device = point_hier.device
+                node_positions = torch.zeros((0, 2), device=device)
+                node_depths = torch.zeros((0,), dtype=torch.float32, device=device)
+                x = torch.zeros((0, features.shape[1]), device=device)
         
         # Step 1: Embed nodes
         x = self.node_embed(x)  # [N_total, embed_dim]
@@ -219,25 +224,31 @@ class QuadtreeTransformerPerceiver(SingleModelBase):
         x = self.enc_norm(x)
         x = self.enc_proj(x)  # [B, N_max, enc_dim]
         
-        # Step 4: Apply transformer blocks with masking (optional)
-        block_kwargs = {}
-        if condition is not None:
-            block_kwargs["cond"] = condition
-        if attn_mask is not None:
-            block_kwargs["attn_mask"] = attn_mask
-        
-        if self.use_transformer_blocks and self.blocks is not None:
-            for blk in self.blocks:
-                x = blk(x, **block_kwargs)
+        # Step 4: Apply transformer blocks with masking (disabled - not used)
+        # block_kwargs = {}
+        # if condition is not None:
+        #     block_kwargs["cond"] = condition
+        # if attn_mask is not None:
+        #     block_kwargs["attn_mask"] = attn_mask
+        # 
+        # for blk in self.blocks:
+        #     x = blk(x, **block_kwargs)
         
         # Step 5: Project to perceiver dimension
         x = self.perc_proj(x)  # [B, N_max, perc_dim]
         
         # Step 6: PerceiverPoolingBlock compresses variable N_max to fixed num_latent_tokens
         # Pass attn_mask to mask out padded positions in the KV attention
+        block_kwargs = {}
+        if condition is not None:
+            block_kwargs["cond"] = condition
         if attn_mask is not None:
             block_kwargs["attn_mask"] = attn_mask
-        x = self.perceiver(kv=x, **block_kwargs)  # [B, num_latent_tokens, perc_dim]
+        # Only pass 'cond' if it's a DitPerceiverPoolingBlock
+        if isinstance(self.perceiver, DitPerceiverPoolingBlock):
+            x = self.perceiver(kv=x, cond=block_kwargs.get("cond"), attn_mask=block_kwargs.get("attn_mask"))
+        else:
+            x = self.perceiver(kv=x, attn_mask=block_kwargs.get("attn_mask"))
         
         return x
 

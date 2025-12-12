@@ -17,16 +17,13 @@ This document contains benchmarking results for various model architectures trai
 
 - **Relative L2 Error**: Final relative L2 error on test split
 - **Relative L1 Error**: Final relative L1 error on test split
-- **Time per Epoch**: Wall-clock time per training epoch, broken down by component:
-  - Encoder time
-  - Processor (latent core) time
-  - Decoder time
-- **Convergence Time**: Time to reach specific relative error thresholds:
+- **Time per Epoch**: Total wall-clock time per training epoch measured during training
+- **Convergence Time**: Time from training start to first epoch where validation relative error threshold is reached:
   - 50% relative error
   - 20% relative error
   - 10% relative error
   - 5% relative error
-- **Model Size**: Total number of trainable parameters
+- **Model Size**: Total number of trainable parameters, broken down by component (Conditioner/Encoder/Processor/Decoder)
 - **Inference Time**: Per-sample inference time, broken down by component:
   - Encoder inference time
   - Processor inference time
@@ -35,7 +32,7 @@ This document contains benchmarking results for various model architectures trai
 ### Notes
 
 - All timing measurements are in seconds unless otherwise specified
-- Convergence times are measured from training start to first epoch where the threshold is reached
+- Convergence times are measured on validation set from training start to first epoch where the threshold is reached
 - Time per epoch is averaged over all training epochs
 - Parameters count includes all trainable parameters in the model
 
@@ -49,7 +46,7 @@ This document contains benchmarking results for various model architectures trai
 
 ### helmholtz_staircase
 
-| Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch (s) | Time to 50% Val Error (s) | Time to 20% Val Error (s) | Time to 10% Val Error (s) | Time to 5% Val Error (s) | # Parameters | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
+| Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch (s) | Time to 50% Val Error (s) | Time to 20% Val Error (s) | Time to 10% Val Error (s) | Time to 5% Val Error (s) | # Parameters (Cond/Enc/Proc/Dec) | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|--------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
 | standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | |
 

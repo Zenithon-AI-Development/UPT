@@ -1,0 +1,132 @@
+wandb: cvsim
+name: quadtree-trl2d-full-training
+stage_name: stage1
+vars:
+  lr: 5.0e-5
+  batch_size: 8
+  max_batch_size: 8
+  epochs: 100
+  num_latent_tokens: 512
+  norm: mean0std1_onfly
+  clamp: 0
+  clamp_mode: log
+  max_num_timesteps: 101
+
+  optim:
+    kind: adamw
+    lr: ${vars.lr}
+    weight_decay: 0.0
+
+datasets:
+  train:
+    kind: well_trl2d_dataset
+    well_base_path: /home/workspace/projects/data/datasets_david/datasets/
+    well_dataset_name: turbulent_radiative_layer_2D
+    split: train
+    num_input_timesteps: 4
+    num_output_timesteps: 1
+    norm: ${vars.norm}
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    max_num_timesteps: ${vars.max_num_timesteps}
+    collators:
+      - kind: quadtree_collator
+        max_level: 6
+        physical_refinement: true
+        refinement_config_path: /home/workspace/projects/transformer/SHINE_mapping/quadtree/configs/turbulent_radiative_layer_2D.yaml
+        cache_quadtrees: true
+  valid:
+    kind: well_trl2d_dataset
+    well_base_path: /home/workspace/projects/data/datasets_david/datasets/
+    well_dataset_name: turbulent_radiative_layer_2D
+    split: valid
+    num_input_timesteps: 4
+    num_output_timesteps: 1
+    norm: ${vars.norm}
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    max_num_timesteps: ${vars.max_num_timesteps}
+    collators:
+      - kind: quadtree_collator
+        max_level: 6
+        physical_refinement: true
+        refinement_config_path: /home/workspace/projects/transformer/SHINE_mapping/quadtree/configs/turbulent_radiative_layer_2D.yaml
+        cache_quadtrees: true
+  test:
+    kind: well_trl2d_dataset
+    well_base_path: /home/workspace/projects/data/datasets_david/datasets/
+    well_dataset_name: turbulent_radiative_layer_2D
+    split: test
+    num_input_timesteps: 4
+    num_output_timesteps: 1
+    norm: ${vars.norm}
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    max_num_timesteps: ${vars.max_num_timesteps}
+    collators:
+      - kind: quadtree_collator
+        max_level: 6
+        physical_refinement: true
+        refinement_config_path: /home/workspace/projects/transformer/SHINE_mapping/quadtree/configs/turbulent_radiative_layer_2D.yaml
+        cache_quadtrees: true
+
+model:
+  kind: cfd_simformer_model
+  conditioner:
+    kind: conditioners.timestep_velocity_conditioner_pdearena
+    kwargs: ${select:dim192:${yaml:models/dim}}
+    optim: ${vars.optim}
+  encoder:
+    kind: encoders.quadtree_transformer_perceiver
+    num_latent_tokens: ${vars.num_latent_tokens}
+    enc_depth: 4
+    embed_dim: 96
+    kwargs:
+      enc_dim: 96
+      perc_dim: 192
+      enc_num_attn_heads: 2
+      perc_num_attn_heads: 3
+    optim: ${vars.optim}
+  latent:
+    kind: latent.transformer_model
+    depth: 4
+    kwargs: ${select:dim192:${yaml:models/latent/transformer}}
+    optim: ${vars.optim}
+  decoder:
+    kind: decoders.cfd_transformer_perceiver
+    depth: 4
+    use_last_norm: true
+    clamp: ${vars.clamp}
+    clamp_mode: ${vars.clamp_mode}
+    kwargs: ${select:dim192to96:${yaml:models/decoders/transformer_perceiver}}
+    optim: ${vars.optim}
+
+trainer:
+  kind: quadtree_trainer
+  precision: float32
+  max_epochs: ${vars.epochs}
+  effective_batch_size: ${vars.batch_size}
+  max_batch_size: ${vars.max_batch_size}
+  num_workers: 0
+  loss_function:
+    kind: elementwise_loss
+    loss_function:
+      kind: rel_l2_loss
+  early_stopper:
+    kind: metric_early_stopper
+    every_n_epochs: 1
+    tolerance: 1000
+    metric_key: loss/online/x_hat/E1
+  log_every_n_epochs: 1
+  callbacks:
+    - kind: best_checkpoint_callback
+      every_n_epochs: 1
+      metric_key: loss/online/x_hat/E1
+      save_optim: true
+    - kind: checkpoint_callback
+      every_n_epochs: 10
+      save_weights: true
+      save_optim: true
+      save_latest_weights: true
+      save_latest_optim: true
+

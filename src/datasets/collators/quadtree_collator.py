@@ -18,14 +18,19 @@ from kappadata.collators import KDSingleCollator
 from kappadata.wrappers import ModeWrapper
 from torch_geometric.utils import to_dense_batch
 
-# Add SHINE_mapping quadtree to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "SHINE_mapping" / "quadtree"))
+# Add SHINE_mapping to path so we can import quadtree as a package
+shine_mapping_path = str(Path(__file__).parent.parent.parent.parent / "SHINE_mapping")
+if shine_mapping_path not in sys.path:
+    sys.path.insert(0, shine_mapping_path)
+shine_mapping_path_abs = "/home/workspace/projects/transformer/SHINE_mapping"
+if shine_mapping_path_abs not in sys.path:
+    sys.path.insert(0, shine_mapping_path_abs)
 try:
-    from kaolin_quadtree_2D import feature_grids_to_quadtree
+    from quadtree.kaolin_quadtree_2D import feature_grids_to_quadtree
 except ImportError:
     raise ImportError(
-        "Could not import feature_grids_to_quadtree from SHINE_mapping/quadtree. "
-        "Ensure the SHINE_mapping directory is accessible."
+        "Could not import feature_grids_to_quadtree from quadtree package. "
+        "Ensure the SHINE_mapping directory is accessible and quadtree is a proper package."
     )
 
 
@@ -150,7 +155,7 @@ class QuadtreeCollator(KDSingleCollator):
             except (AttributeError, KeyError, IndexError, TypeError):
                 pass
         
-        # Fallback: try ModeWrapper (may not work for raw grid data)
+        # Fallback: try ModeWrapper
         try:
             if is_input:
                 input_fields = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item="input_fields")
@@ -166,7 +171,7 @@ class QuadtreeCollator(KDSingleCollator):
                         return output_fields[timestep_idx]  # (H, W, C)
                     elif output_fields.ndim == 3:  # (H, W, C) - single timestep
                         return output_fields if timestep_idx == 0 else None
-        except (KeyError, AttributeError, IndexError):
+        except (KeyError, AttributeError, IndexError, ValueError):
             pass
         
         return None
@@ -387,6 +392,52 @@ class QuadtreeCollator(KDSingleCollator):
         else:
             raise ValueError("No quadtree features collected from batch")
         
+        # Extract query_pos from samples for decoder (original grid positions)
+        query_pos_list = []
+        query_lens = []
+        for sample, sample_ctx in zip(samples, sample_ctxs):
+            try:
+                query_pos_item = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item="query_pos")
+                if query_pos_item is not None:
+                    query_pos_list.append(query_pos_item)
+                    query_lens.append(len(query_pos_item))
+                else:
+                    # Fallback: try to get from dataset
+                    if dataset is not None and isinstance(sample_ctx, dict):
+                        sample_dataset_idx = sample_ctx.get('idx') or sample_ctx.get('dataset_idx')
+                        if sample_dataset_idx is not None:
+                            query_pos_item = dataset.getitem_query_pos(sample_dataset_idx)
+                            if query_pos_item is not None:
+                                query_pos_list.append(query_pos_item)
+                                query_lens.append(len(query_pos_item))
+            except (KeyError, AttributeError):
+                pass
+        
+        # Create unbatch_idx and unbatch_select for decoder (based on query_pos lengths)
+        if len(query_lens) > 0:
+            from torch.nn.utils.rnn import pad_sequence
+            batch_size = len(query_lens)
+            maxlen = max(query_lens)
+            unbatch_idx = torch.empty(maxlen * batch_size, dtype=torch.long, device=device)
+            unbatch_select = []
+            unbatch_start = 0
+            cur_unbatch_idx = 0
+            for i in range(batch_size):
+                unbatch_end = unbatch_start + query_lens[i]
+                unbatch_idx[unbatch_start:unbatch_end] = cur_unbatch_idx
+                unbatch_select.append(cur_unbatch_idx)
+                cur_unbatch_idx += 1
+                unbatch_start = unbatch_end
+                padding = maxlen - query_lens[i]
+                if padding > 0:
+                    unbatch_end = unbatch_start + padding
+                    unbatch_idx[unbatch_start:unbatch_end] = cur_unbatch_idx
+                    cur_unbatch_idx += 1
+                    unbatch_start = unbatch_end
+            unbatch_select = torch.tensor(unbatch_select, dtype=torch.long, device=device)
+            ctx['unbatch_idx'] = unbatch_idx
+            ctx['unbatch_select'] = unbatch_select
+        
         # Store in context for trainer to extract
         ctx['quadtree_features'] = all_features_tensor
         ctx['quadtree_batch_idx'] = all_batch_idx_tensor
@@ -407,12 +458,55 @@ class QuadtreeCollator(KDSingleCollator):
             })
         ctx['per_sample_quadtrees'] = per_sample_quadtrees
         
-        # Return standard collated batch format
-        # For compatibility, return empty tuple for collated_batch
-        # The actual data is in ctx for trainer to extract
-        collated_batch = tuple()
+        # Return batch tuple matching dataset_mode order
+        # ModeWrapper.get_item uses index in dataset_mode to access batch tuple
+        from torch.utils.data import default_collate
+        collated_batch_dict = {}
         
-        return collated_batch, ctx
+        # Collate query_pos if available
+        if len(query_pos_list) > 0:
+            from torch.nn.utils.rnn import pad_sequence
+            collated_batch_dict["query_pos"] = pad_sequence(query_pos_list, batch_first=True)
+        
+        # Collate other items from dataset_mode
+        result = []
+        for item in dataset_mode.split(" "):
+            if item in collated_batch_dict:
+                result.append(collated_batch_dict[item])
+            elif item in ["input_fields", "output_fields"]:
+                # These are used by collator but not needed in batch tuple
+                # Return None as placeholder
+                result.append(None)
+            else:
+                # Try to collate from samples
+                try:
+                    item_list = []
+                    for sample, sample_ctx in zip(samples, sample_ctxs):
+                        try:
+                            item_val = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item=item)
+                            if item_val is not None:
+                                item_list.append(item_val)
+                            else:
+                                # Fallback: try dataset getitem
+                                if dataset is not None and isinstance(sample_ctx, dict):
+                                    sample_dataset_idx = sample_ctx.get('idx') or sample_ctx.get('dataset_idx')
+                                    if sample_dataset_idx is not None:
+                                        getitem_method = getattr(dataset, f"getitem_{item}", None)
+                                        if getitem_method is not None:
+                                            item_val = getitem_method(sample_dataset_idx)
+                                            if item_val is not None:
+                                                item_list.append(item_val)
+                        except (KeyError, AttributeError, ValueError, IndexError):
+                            pass
+                    
+                    if len(item_list) > 0:
+                        result.append(default_collate(item_list))
+                    else:
+                        result.append(None)
+                except Exception:
+                    result.append(None)
+        
+        return tuple(result), ctx
     
     @property
     def default_collate_mode(self):
