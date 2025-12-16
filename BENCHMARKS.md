@@ -45,17 +45,20 @@ This document contains benchmarking results for various model architectures trai
 
 | Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch (s) | Time to 50% Val Error (s) | Time to 20% Val Error (s) | Time to 10% Val Error (s) | Time to 5% Val Error (s) | # Parameters (Cond/Enc/Proc/Dec) | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|--------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------| 
-| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 25.4% | 15.5% | 944.69s | 0.96hrs | - | - | - | 17 189 092 (1 477 632, 4 054 272, 5 356 992, 6 300 196) | 25.26ms | 2.58ms | 88.37ms |
+| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 25.4% | 15.5% | 944.69s | 0.96hrs | - | - | - | 17 189 092 (1 477 632, 4 054 272, 5 356 992, 6 300 196) | 25.26ms | 2.58ms | 88.37ms | 
+| Quadtree UPT | QuadtreePerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | |
 
 ### helmholtz_staircase
 
 | Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch (s) | Time to 50% Val Error (s) | Time to 20% Val Error (s) | Time to 10% Val Error (s) | Time to 5% Val Error (s) | # Parameters | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|--------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
-| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 15.9 % | 12.5 % | 22 696 s | 28 h | 87 h | - | - | 17 189 092 (1 477 632, 4 054 272, 5 356 992, 6 300 196) | 20 265.10 ms | 2.40 ms | 54.09 |
+| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 15.9 % | 12.5 % | 22 696 s | 28 h | 87 h | - | - | 17 189 092 (1 477 632, 4 054 272, 5 356 992, 6 300 196) | 20 265.10 ms | 2.40 ms | 54.09 | 
+| Quadtree UPT | QuadtreePerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | |
 
 ### Zpinch (multiple resolutions on uniform grids)
 
 | Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch (s) | Time to 50% Val Error (s) | Time to 20% Val Error (s) | Time to 10% Val Error (s) | Time to 5% Val Error (s) | # Parameters (Cond/Enc/Proc/Dec) | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|---------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
-| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 28.3% | 13.9% | 2 146.2s | 0 | - | - | - | 8 845 927 (738 816, 2 859 936, 2 697 024, 2 550 151) | 5.37ms | 1.80ms | 6.35ms |
+| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 28.3% | 13.9% | 2 146.2s | 0 | - | - | - | 8 845 927 (738 816, 2 859 936, 2 697 024, 2 550 151) | 5.37ms | 1.80ms | 6.35ms | 
+| Quadtree UPT | QuadtreePerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | |
 
