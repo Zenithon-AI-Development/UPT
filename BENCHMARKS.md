@@ -45,34 +45,19 @@ This document contains benchmarking results for various model architectures trai
 
 | Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch (s) | Time to 50% Val Error (s) | Time to 20% Val Error (s) | Time to 10% Val Error (s) | Time to 5% Val Error (s) | # Parameters (Cond/Enc/Proc/Dec) | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|--------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------| 
-<<<<<<< HEAD
-| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 25.4% | 15.5% | 944.69s | 0.96hrs | - | - | - | 17.189.092 (1.477.632, 4.054.272, 5.356.992, 6.300.196) | 25.26ms | 2.58ms | 88.37ms | 
-=======
-| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 25.4% | 15.5% | 944.69s | 0.96hrs | - | - | - | 17 189 092 (1 477 632, 4 054 272, 5 356 992, 6 300 196) | 25.26ms | 2.58ms | 88.37ms | 
->>>>>>> 8d812d286fa8477897596f2fb015bc64e56175a9
-| Quadtree UPT | QuadtreeTransformerPerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | |
+| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 25.4% | 15.5% | 944.69s | 0.96hrs | - | - | - | 17.189.092 (1.477.632, 4.054.272, 5.356.992, 6.300.196) | 25.26ms | 2.58ms | 88.37ms |
 
 ### helmholtz_staircase
 
 | Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch (s) | Time to 50% Val Error (s) | Time to 20% Val Error (s) | Time to 10% Val Error (s) | Time to 5% Val Error (s) | # Parameters (Cond/Enc/Proc/Dec) | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|--------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
-<<<<<<< HEAD
 | standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | | | 22774.9s | 45332.0s | 158391.0s | 226381.0s | 431227.0s | 17.189.092 (1.477.632, 4.054.272, 5.356.992, 6.300.196) | | | |
 | quadtree UPT | QuadtreeTransformerPerceiver | TransformerModel | TransformerPerceiver | | | 7013.4s | 5400.0s | 26607.0s | 78623.0s | - | 14.887.202 (1.477.632, 1.752.576, 5.356.992, 6.300.002) | 6.77ms | 3.25ms | 80.84ms |
-=======
-| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 11.4 % | 7.6 % | 22 696 s | 28 h | 87 h | - | - | 17 189 092 (1 477 632, 4 054 272, 5 356 992, 6 300 196) | 20 265.10 ms | 2.40 ms | 54.09 | 
-| Quadtree UPT | QuadtreePerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | |
->>>>>>> 8d812d286fa8477897596f2fb015bc64e56175a9
 
 ### Zpinch (multiple resolutions on uniform grids)
 
 | Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch (s) | Time to 50% Val Error (s) | Time to 20% Val Error (s) | Time to 10% Val Error (s) | Time to 5% Val Error (s) | # Parameters (Cond/Enc/Proc/Dec) | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|---------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
-<<<<<<< HEAD
 | standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 28.3% | 13.9% | 2146.2s | 0 | - | - | - | 8.845.927 (738.816, 2.859.936, 2.697.024, 2.550.151) | 5.37ms | 1.80ms | 6.35ms |
 | quadtree UPT | QuadtreeTransformerPerceiver | TransformerModel | TransformerPerceiver | | | 2778.0s | 2872.0s | 6208.0s | - | - | 17.107.110 (1.477.632, 3.972.096, 5.356.992, 6.300.390) | 10.59ms | 4.21ms | 8.24ms |
-=======
-| standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | 28.3% | 13.9% | 2 146.2s | 0 | - | - | - | 8 845 927 (738 816, 2 859 936, 2 697 024, 2 550 151) | 5.37ms | 1.80ms | 6.35ms | 
-| Quadtree UPT | QuadtreeTransformerPerceiver | TransformerModel | TransformerPerceiver | | | | | | | | | | | |
->>>>>>> 8d812d286fa8477897596f2fb015bc64e56175a9
 
