@@ -18,20 +18,43 @@ from kappadata.collators import KDSingleCollator
 from kappadata.wrappers import ModeWrapper
 from torch_geometric.utils import to_dense_batch
 
-# Add SHINE_mapping to path so we can import quadtree as a package
-shine_mapping_path = str(Path(__file__).parent.parent.parent.parent / "SHINE_mapping")
-if shine_mapping_path not in sys.path:
-    sys.path.insert(0, shine_mapping_path)
-shine_mapping_path_abs = "/home/workspace/projects/transformer/SHINE_mapping"
-if shine_mapping_path_abs not in sys.path:
-    sys.path.insert(0, shine_mapping_path_abs)
+# Add SHINE_mapping quadtree to path
+# Path from newPT/src/datasets/collators/quadtree_collator.py to SHINE_mapping/quadtree
+# Try multiple possible paths
+possible_paths = [
+    Path(__file__).parent.parent.parent.parent.parent / "SHINE_mapping" / "quadtree",
+    Path("/home/workspace/projects/transformer/SHINE_mapping/quadtree"),
+    Path(__file__).parent.parent.parent.parent / "SHINE_mapping" / "quadtree",
+]
+shine_quadtree_path = None
+for path in possible_paths:
+    if path.exists() and (path / "kaolin_quadtree_2D.py").exists():
+        shine_quadtree_path = path
+        break
+
+if shine_quadtree_path is None:
+    raise ImportError(
+        f"Could not find SHINE_mapping/quadtree directory. Tried: {possible_paths}"
+    )
+
+# Add both the quadtree directory and its parent to sys.path
+# This is needed because kaolin_quadtree_2D uses relative imports like "from .refinement_config import RefinementConfig"
+shine_parent_path = shine_quadtree_path.parent
+if str(shine_parent_path) not in sys.path:
+    sys.path.insert(0, str(shine_parent_path))
+if str(shine_quadtree_path) not in sys.path:
+    sys.path.insert(0, str(shine_quadtree_path))
+
 try:
     from quadtree.kaolin_quadtree_2D import feature_grids_to_quadtree
 except ImportError:
-    raise ImportError(
-        "Could not import feature_grids_to_quadtree from quadtree package. "
-        "Ensure the SHINE_mapping directory is accessible and quadtree is a proper package."
-    )
+    try:
+        from kaolin_quadtree_2D import feature_grids_to_quadtree
+    except ImportError as e:
+        raise ImportError(
+            f"Could not import feature_grids_to_quadtree from SHINE_mapping/quadtree. "
+            f"Path tried: {shine_quadtree_path}. Error: {e}"
+        )
 
 
 class QuadtreeCollator(KDSingleCollator):
@@ -126,52 +149,158 @@ class QuadtreeCollator(KDSingleCollator):
         # Try to get raw sample data from dataset if available
         if dataset is not None and sample_idx is not None:
             try:
-                # Access raw sample via dataset's _item method
-                if hasattr(dataset, '_item'):
-                    raw_sample = dataset._item(sample_idx)
-                    if isinstance(raw_sample, dict):
-                        if is_input:
+                # Use dataset's getitem methods directly
+                if is_input:
+                    if hasattr(dataset, 'getitem_input_fields'):
+                        input_fields = dataset.getitem_input_fields(sample_idx)
+                        if input_fields is not None:
+                            input_fields = torch.as_tensor(input_fields, dtype=torch.float32)
+                            if input_fields.ndim == 4:  # (T, H, W, C)
+                                return input_fields[timestep_idx]  # (H, W, C)
+                            elif input_fields.ndim == 3:  # (H, W, C)
+                                return input_fields if timestep_idx == 0 else None
+                    # Fallback to _item method
+                    if hasattr(dataset, '_item'):
+                        raw_sample = dataset._item(sample_idx)
+                        if isinstance(raw_sample, dict):
                             input_fields = raw_sample.get('input_fields')
                             if input_fields is not None:
                                 input_fields = torch.as_tensor(input_fields, dtype=torch.float32)
-                                # Apply normalization (dataset does this, but we need it here too)
                                 if hasattr(dataset, '_apply_norm'):
                                     input_fields = dataset._apply_norm(input_fields)
                                 if input_fields.ndim == 4:  # (T, H, W, C)
                                     return input_fields[timestep_idx]  # (H, W, C)
                                 elif input_fields.ndim == 3:  # (H, W, C)
                                     return input_fields if timestep_idx == 0 else None
-                        else:
+                else:
+                    if hasattr(dataset, 'getitem_output_fields'):
+                        output_fields = dataset.getitem_output_fields(sample_idx)
+                        if output_fields is not None:
+                            output_fields = torch.as_tensor(output_fields, dtype=torch.float32)
+                            if output_fields.ndim == 4:  # (T, H, W, C)
+                                return output_fields[timestep_idx]  # (H, W, C)
+                            elif output_fields.ndim == 3:  # (H, W, C)
+                                return output_fields if timestep_idx == 0 else None
+                    # Fallback to _item method
+                    if hasattr(dataset, '_item'):
+                        raw_sample = dataset._item(sample_idx)
+                        if isinstance(raw_sample, dict):
                             output_fields = raw_sample.get('output_fields')
                             if output_fields is not None:
                                 output_fields = torch.as_tensor(output_fields, dtype=torch.float32)
-                                # Apply normalization
                                 if hasattr(dataset, '_apply_norm'):
                                     output_fields = dataset._apply_norm(output_fields)
                                 if output_fields.ndim == 4:  # (T, H, W, C)
                                     return output_fields[timestep_idx]  # (H, W, C)
                                 elif output_fields.ndim == 3:  # (H, W, C)
                                     return output_fields if timestep_idx == 0 else None
+            except (AttributeError, KeyError, IndexError, TypeError) as e:
+                pass
+        
+        # Fallback: try ModeWrapper only if item is in mode (may not work for raw grid data)
+        try:
+            if is_input:
+                if ModeWrapper.has_item(mode=dataset_mode, item="input_fields"):
+                    input_fields = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item="input_fields")
+                    if input_fields is not None:
+                        if input_fields.ndim == 4:  # (T, H, W, C)
+                            return input_fields[timestep_idx]  # (H, W, C)
+                        elif input_fields.ndim == 3:  # (H, W, C) - single timestep
+                            return input_fields if timestep_idx == 0 else None
+            else:
+                if ModeWrapper.has_item(mode=dataset_mode, item="output_fields"):
+                    output_fields = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item="output_fields")
+                    if output_fields is not None:
+                        if output_fields.ndim == 4:  # (T, H, W, C)
+                            return output_fields[timestep_idx]  # (H, W, C)
+                        elif output_fields.ndim == 3:  # (H, W, C) - single timestep
+                            return output_fields if timestep_idx == 0 else None
+        except (KeyError, AttributeError, IndexError, ValueError):
+            pass
+        
+        # Last resort: if dataset is available but sample_idx is None, try to reconstruct from sample
+        # This handles the case where the dataset is accessible but we need to find the right index
+        if dataset is not None and sample_idx is None:
+            # For overfit with single sample, sample_idx should be 0
+            try:
+                if is_input and hasattr(dataset, 'getitem_input_fields'):
+                    input_fields = dataset.getitem_input_fields(0)
+                    if input_fields is not None:
+                        input_fields = torch.as_tensor(input_fields, dtype=torch.float32)
+                        if input_fields.ndim == 4:
+                            return input_fields[timestep_idx]
+                        elif input_fields.ndim == 3:
+                            return input_fields if timestep_idx == 0 else None
+                elif not is_input and hasattr(dataset, 'getitem_output_fields'):
+                    output_fields = dataset.getitem_output_fields(0)
+                    if output_fields is not None:
+                        output_fields = torch.as_tensor(output_fields, dtype=torch.float32)
+                        if output_fields.ndim == 4:
+                            return output_fields[timestep_idx]
+                        elif output_fields.ndim == 3:
+                            return output_fields if timestep_idx == 0 else None
+            except:
+                pass
+        
+        return None
+    
+    def _extract_mask_from_sample(
+        self,
+        sample: Tuple,
+        dataset_mode: str,
+        dataset: Any = None,
+        sample_idx: Optional[int] = None
+    ) -> Optional[torch.Tensor]:
+        """
+        Extract mask (constant_fields) from sample for quadtree construction.
+        
+        Args:
+            sample: Sample tuple from dataset
+            dataset_mode: Dataset mode string
+            dataset: Optional dataset object to access raw data
+            sample_idx: Optional dataset index
+        
+        Returns:
+            Mask tensor (H, W) or (H, W, 1) or None if not available
+        """
+        # Try to get mask from dataset
+        if dataset is not None and sample_idx is not None:
+            try:
+                if hasattr(dataset, 'getitem_constant_fields'):
+                    mask = dataset.getitem_constant_fields(sample_idx)
+                    if mask is not None:
+                        mask = torch.as_tensor(mask, dtype=torch.float32)
+                        # Convert (H, W, C) to (H, W) if C=1, or return as-is
+                        if mask.ndim == 3 and mask.shape[2] == 1:
+                            return mask.squeeze(2)  # (H, W)
+                        elif mask.ndim == 2:
+                            return mask  # (H, W)
+                # Fallback to _item method
+                if hasattr(dataset, '_item'):
+                    raw_sample = dataset._item(sample_idx)
+                    if isinstance(raw_sample, dict):
+                        constant_fields = raw_sample.get('constant_fields')
+                        if constant_fields is not None and constant_fields.numel() > 0:
+                            mask = torch.as_tensor(constant_fields, dtype=torch.float32)
+                            # For Helmholtz, mask is typically (H, W, 1) or (H, W)
+                            if mask.ndim == 3 and mask.shape[2] == 1:
+                                return mask.squeeze(2)  # (H, W)
+                            elif mask.ndim == 2:
+                                return mask  # (H, W)
             except (AttributeError, KeyError, IndexError, TypeError):
                 pass
         
-        # Fallback: try ModeWrapper
+        # Try ModeWrapper only if item is in mode
         try:
-            if is_input:
-                input_fields = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item="input_fields")
-                if input_fields is not None:
-                    if input_fields.ndim == 4:  # (T, H, W, C)
-                        return input_fields[timestep_idx]  # (H, W, C)
-                    elif input_fields.ndim == 3:  # (H, W, C) - single timestep
-                        return input_fields if timestep_idx == 0 else None
-            else:
-                output_fields = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item="output_fields")
-                if output_fields is not None:
-                    if output_fields.ndim == 4:  # (T, H, W, C)
-                        return output_fields[timestep_idx]  # (H, W, C)
-                    elif output_fields.ndim == 3:  # (H, W, C) - single timestep
-                        return output_fields if timestep_idx == 0 else None
-        except (KeyError, AttributeError, IndexError, ValueError):
+            if ModeWrapper.has_item(mode=dataset_mode, item="constant_fields"):
+                constant_fields = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item="constant_fields")
+                if constant_fields is not None:
+                    constant_fields = torch.as_tensor(constant_fields, dtype=torch.float32)
+                    if constant_fields.ndim == 3 and constant_fields.shape[2] == 1:
+                        return constant_fields.squeeze(2)  # (H, W)
+                    elif constant_fields.ndim == 2:
+                        return constant_fields  # (H, W)
+        except (KeyError, AttributeError, ValueError):
             pass
         
         return None
@@ -179,7 +308,8 @@ class QuadtreeCollator(KDSingleCollator):
     def _construct_quadtree_from_grid(
         self,
         grid: torch.Tensor,
-        device: torch.device
+        device: torch.device,
+        mask: Optional[torch.Tensor] = None
     ) -> Dict[str, torch.Tensor]:
         """
         Construct quadtree from a single grid snapshot.
@@ -187,6 +317,7 @@ class QuadtreeCollator(KDSingleCollator):
         Args:
             grid: (H, W, C) tensor of normalized grid data
             device: Device to place quadtree on
+            mask: Optional (H, W) or (H, W, 1) mask tensor for quadtree construction
         
         Returns:
             Quadtree dict with 'point_hierarchies', 'pyramids', 'features'
@@ -199,9 +330,21 @@ class QuadtreeCollator(KDSingleCollator):
         
         grid_batch = grid_batch.to(device)
         
+        # Prepare mask if provided: convert (H, W) or (H, W, 1) to (1, 1, H, W) for feature_grids_to_quadtree
+        mask_batch = None
+        if mask is not None:
+            mask = mask.to(device)
+            if mask.ndim == 2:  # (H, W)
+                mask_batch = mask.unsqueeze(0).unsqueeze(0)  # (1, 1, H, W)
+            elif mask.ndim == 3 and mask.shape[2] == 1:  # (H, W, 1)
+                mask_batch = mask.permute(2, 0, 1).unsqueeze(0)  # (1, 1, H, W)
+            else:
+                raise ValueError(f"Mask must be (H, W) or (H, W, 1), got {mask.shape}")
+        
         # Construct quadtree
         quadtree_dict = feature_grids_to_quadtree(
             feature_grids=grid_batch,
+            masks=mask_batch,
             max_level=self.max_level,
             physical_refinement=self.physical_refinement,
             refinement_config_path=self.refinement_config_path,
@@ -254,12 +397,78 @@ class QuadtreeCollator(KDSingleCollator):
         # Unpack batch and context
         samples, sample_ctxs = zip(*batch)
         
+        # Extract timestep and velocity from samples if available
+        timesteps = []
+        velocities = []
+        for sample_idx, (sample, sample_ctx) in enumerate(zip(samples, sample_ctxs)):
+            # Try to get timestep and velocity from ModeWrapper
+            try:
+                timestep = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item="timestep")
+                velocity = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item="velocity")
+                if timestep is not None:
+                    timesteps.append(timestep)
+                if velocity is not None:
+                    velocities.append(velocity)
+            except (KeyError, AttributeError, IndexError):
+                # If not in batch, try to get from dataset directly
+                if self.dataset is not None:
+                    try:
+                        dataset_idx = sample_ctx.get("dataset_idx", sample_idx) if isinstance(sample_ctx, dict) else sample_idx
+                        if hasattr(self.dataset, 'getitem_timestep'):
+                            timestep = self.dataset.getitem_timestep(dataset_idx)
+                            if timestep is not None:
+                                timesteps.append(torch.as_tensor(timestep, dtype=torch.float32))
+                        if hasattr(self.dataset, 'getitem_velocity'):
+                            velocity = self.dataset.getitem_velocity(dataset_idx)
+                            if velocity is not None:
+                                velocities.append(torch.as_tensor(velocity, dtype=torch.float32))
+                    except (AttributeError, KeyError, IndexError):
+                        pass
+        
+        # Store in context if we got any
+        if timesteps:
+            ctx['timestep'] = torch.stack(timesteps) if len(timesteps) > 1 else timesteps[0]
+        if velocities:
+            ctx['velocity'] = torch.stack(velocities) if len(velocities) > 1 else velocities[0]
+        
         # Use dataset from __init__ or try to get from context
         dataset = self.dataset
         if dataset is None and len(sample_ctxs) > 0:
             # Try to get dataset from first context
             first_ctx = sample_ctxs[0] if isinstance(sample_ctxs[0], dict) else {}
             dataset = first_ctx.get('dataset')
+        
+        # If dataset is still None, try to get it from the sample's root_dataset
+        # This is needed for DataLoader workers where self.dataset might not be pickled
+        if dataset is None and len(samples) > 0:
+            try:
+                # In kappadata, ModeWrapper stores the dataset in .dataset attribute
+                # Try to access it through the sample
+                first_sample = samples[0]
+                # ModeWrapper stores dataset in .dataset attribute
+                if hasattr(first_sample, 'dataset'):
+                    dataset = first_sample.dataset
+                elif hasattr(first_sample, 'root_dataset'):
+                    dataset = first_sample.root_dataset
+                elif isinstance(first_sample, tuple) and len(first_sample) > 0:
+                    # Try to get from sample tuple
+                    if hasattr(first_sample[0], 'dataset'):
+                        dataset = first_sample[0].dataset
+                    elif hasattr(first_sample[0], 'root_dataset'):
+                        dataset = first_sample[0].root_dataset
+                # Also try to get from ModeWrapper's internal dataset
+                # ModeWrapper wraps the dataset, so we can access it
+                if dataset is None:
+                    try:
+                        # Try to get dataset from ModeWrapper by accessing the wrapped dataset
+                        # This is a workaround for DataLoader workers
+                        import kappadata.wrappers as kd_wrappers
+                        if isinstance(first_sample, kd_wrappers.ModeWrapper):
+                            dataset = first_sample.dataset
+                    except (AttributeError, ImportError, TypeError):
+                        pass
+            except (AttributeError, IndexError, TypeError):
+                pass
         
         # Determine device from first sample
         device = None
@@ -291,6 +500,19 @@ class QuadtreeCollator(KDSingleCollator):
             sample_dataset_idx = None
             if isinstance(sample_ctx, dict):
                 sample_dataset_idx = sample_ctx.get('idx') or sample_ctx.get('dataset_idx')
+            # If not in context, try to get from sample itself (kappadata stores idx in sample)
+            if sample_dataset_idx is None and hasattr(sample, '__getitem__'):
+                try:
+                    # Try to extract index from sample tuple if it's (idx, data)
+                    if isinstance(sample, tuple) and len(sample) >= 2:
+                        sample_dataset_idx = sample[0] if isinstance(sample[0], (int, torch.Tensor)) else None
+                        if isinstance(sample_dataset_idx, torch.Tensor):
+                            sample_dataset_idx = sample_dataset_idx.item()
+                except (IndexError, AttributeError, TypeError):
+                    pass
+            # Last resort: use sample_idx as dataset index (works for single sample overfit)
+            if sample_dataset_idx is None:
+                sample_dataset_idx = sample_idx
             
             # Get sample identifier for caching
             sample_id = self._get_sample_identifier(sample, dataset_mode)
@@ -314,8 +536,17 @@ class QuadtreeCollator(KDSingleCollator):
                             f"Ensure dataset provides 'input_fields' in (T, H, W, C) format or pass dataset to collator."
                         )
                     
-                    # Construct quadtree
-                    quadtree_dict = self._construct_quadtree_from_grid(grid, device)
+                    # Extract mask (constant_fields) for quadtree construction (same for all timesteps)
+                    mask = self._extract_mask_from_sample(
+                        sample, dataset_mode, dataset=dataset, sample_idx=sample_dataset_idx
+                    )
+                    
+                    # Construct quadtree with mask
+                    quadtree_dict = self._construct_quadtree_from_grid(grid, device, mask=mask)
+                    
+                    # Debug: report number of quadtree nodes
+                    num_nodes = quadtree_dict['features'].shape[0]
+                    # print(f"[QUADTREE DEBUG] Sample {sample_dataset_idx}, input timestep {t_idx}: {num_nodes} quadtree nodes")
                     
                     # Cache if enabled
                     if self.cache_quadtrees and cache_key is not None:
@@ -326,36 +557,8 @@ class QuadtreeCollator(KDSingleCollator):
                 quadtree_dicts.append(quadtree_dict)
                 sample_quadtree_indices.append(quadtree_idx)
             
-            # Process output timestep (0)
-            t_idx = 0
-            cache_key = (sample_id[0], num_input_timesteps + t_idx) if sample_id is not None else None
-            
-            # Check cache
-            if self.cache_quadtrees and cache_key is not None and cache_key in self._quadtree_cache:
-                quadtree_dict = self._quadtree_cache[cache_key]
-            else:
-                # Extract grid for output timestep
-                grid = self._extract_grid_from_sample(
-                    sample, dataset_mode, t_idx, is_input=False,
-                    dataset=dataset, sample_idx=sample_dataset_idx
-                )
-                if grid is None:
-                    raise ValueError(
-                        f"Could not extract output grid from sample {sample_idx}. "
-                        f"Ensure dataset provides 'output_fields' in (T, H, W, C) format or pass dataset to collator."
-                    )
-                
-                # Construct quadtree
-                quadtree_dict = self._construct_quadtree_from_grid(grid, device)
-                
-                # Cache if enabled
-                if self.cache_quadtrees and cache_key is not None:
-                    self._quadtree_cache[cache_key] = quadtree_dict
-            
-            # Add to batch
-            quadtree_idx = len(quadtree_dicts)
-            quadtree_dicts.append(quadtree_dict)
-            sample_quadtree_indices.append(quadtree_idx)
+            # Note: We don't create a quadtree from the output timestep
+            # The output is only used as target for loss computation, not for quadtree encoding
             
             sample_to_quadtree_map.append(sample_quadtree_indices)
         
@@ -377,13 +580,7 @@ class QuadtreeCollator(KDSingleCollator):
                 all_features.append(features)
                 all_batch_idx.extend([sample_idx] * M)
             
-            # Output quadtree (last 1)
-            output_idx = quadtree_indices[num_input_timesteps]
-            qd = quadtree_dicts[output_idx]
-            features = qd['features']  # (M, C)
-            M = features.shape[0]
-            all_features.append(features)
-            all_batch_idx.extend([sample_idx] * M)
+            # Note: Output quadtree is not created - output is only used as target
         
         # Concatenate all features
         if len(all_features) > 0:
@@ -391,52 +588,6 @@ class QuadtreeCollator(KDSingleCollator):
             all_batch_idx_tensor = torch.tensor(all_batch_idx, dtype=torch.long, device=device)
         else:
             raise ValueError("No quadtree features collected from batch")
-        
-        # Extract query_pos from samples for decoder (original grid positions)
-        query_pos_list = []
-        query_lens = []
-        for sample, sample_ctx in zip(samples, sample_ctxs):
-            try:
-                query_pos_item = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item="query_pos")
-                if query_pos_item is not None:
-                    query_pos_list.append(query_pos_item)
-                    query_lens.append(len(query_pos_item))
-                else:
-                    # Fallback: try to get from dataset
-                    if dataset is not None and isinstance(sample_ctx, dict):
-                        sample_dataset_idx = sample_ctx.get('idx') or sample_ctx.get('dataset_idx')
-                        if sample_dataset_idx is not None:
-                            query_pos_item = dataset.getitem_query_pos(sample_dataset_idx)
-                            if query_pos_item is not None:
-                                query_pos_list.append(query_pos_item)
-                                query_lens.append(len(query_pos_item))
-            except (KeyError, AttributeError):
-                pass
-        
-        # Create unbatch_idx and unbatch_select for decoder (based on query_pos lengths)
-        if len(query_lens) > 0:
-            from torch.nn.utils.rnn import pad_sequence
-            batch_size = len(query_lens)
-            maxlen = max(query_lens)
-            unbatch_idx = torch.empty(maxlen * batch_size, dtype=torch.long, device=device)
-            unbatch_select = []
-            unbatch_start = 0
-            cur_unbatch_idx = 0
-            for i in range(batch_size):
-                unbatch_end = unbatch_start + query_lens[i]
-                unbatch_idx[unbatch_start:unbatch_end] = cur_unbatch_idx
-                unbatch_select.append(cur_unbatch_idx)
-                cur_unbatch_idx += 1
-                unbatch_start = unbatch_end
-                padding = maxlen - query_lens[i]
-                if padding > 0:
-                    unbatch_end = unbatch_start + padding
-                    unbatch_idx[unbatch_start:unbatch_end] = cur_unbatch_idx
-                    cur_unbatch_idx += 1
-                    unbatch_start = unbatch_end
-            unbatch_select = torch.tensor(unbatch_select, dtype=torch.long, device=device)
-            ctx['unbatch_idx'] = unbatch_idx
-            ctx['unbatch_select'] = unbatch_select
         
         # Store in context for trainer to extract
         ctx['quadtree_features'] = all_features_tensor
@@ -447,66 +598,22 @@ class QuadtreeCollator(KDSingleCollator):
         ctx['num_output_timesteps'] = num_output_timesteps
         
         # Also store per-sample quadtree dicts for easier access
-        # Format: list of dicts, each dict has 'input_quadtrees' (list of 4) and 'output_quadtree' (1)
+        # Format: list of dicts, each dict has 'input_quadtrees' (list of 4)
+        # Note: output quadtree is not created - output is only used as target
         per_sample_quadtrees = []
         for sample_idx, quadtree_indices in enumerate(sample_to_quadtree_map):
             input_quadtrees = [quadtree_dicts[i] for i in quadtree_indices[:num_input_timesteps]]
-            output_quadtree = quadtree_dicts[quadtree_indices[num_input_timesteps]]
             per_sample_quadtrees.append({
                 'input_quadtrees': input_quadtrees,
-                'output_quadtree': output_quadtree
             })
         ctx['per_sample_quadtrees'] = per_sample_quadtrees
         
-        # Return batch tuple matching dataset_mode order
-        # ModeWrapper.get_item uses index in dataset_mode to access batch tuple
-        from torch.utils.data import default_collate
-        collated_batch_dict = {}
+        # Return standard collated batch format
+        # For compatibility, return empty tuple for collated_batch
+        # The actual data is in ctx for trainer to extract
+        collated_batch = tuple()
         
-        # Collate query_pos if available
-        if len(query_pos_list) > 0:
-            from torch.nn.utils.rnn import pad_sequence
-            collated_batch_dict["query_pos"] = pad_sequence(query_pos_list, batch_first=True)
-        
-        # Collate other items from dataset_mode
-        result = []
-        for item in dataset_mode.split(" "):
-            if item in collated_batch_dict:
-                result.append(collated_batch_dict[item])
-            elif item in ["input_fields", "output_fields"]:
-                # These are used by collator but not needed in batch tuple
-                # Return None as placeholder
-                result.append(None)
-            else:
-                # Try to collate from samples
-                try:
-                    item_list = []
-                    for sample, sample_ctx in zip(samples, sample_ctxs):
-                        try:
-                            item_val = ModeWrapper.get_item(mode=dataset_mode, batch=sample, item=item)
-                            if item_val is not None:
-                                item_list.append(item_val)
-                            else:
-                                # Fallback: try dataset getitem
-                                if dataset is not None and isinstance(sample_ctx, dict):
-                                    sample_dataset_idx = sample_ctx.get('idx') or sample_ctx.get('dataset_idx')
-                                    if sample_dataset_idx is not None:
-                                        getitem_method = getattr(dataset, f"getitem_{item}", None)
-                                        if getitem_method is not None:
-                                            item_val = getitem_method(sample_dataset_idx)
-                                            if item_val is not None:
-                                                item_list.append(item_val)
-                        except (KeyError, AttributeError, ValueError, IndexError):
-                            pass
-                    
-                    if len(item_list) > 0:
-                        result.append(default_collate(item_list))
-                    else:
-                        result.append(None)
-                except Exception:
-                    result.append(None)
-        
-        return tuple(result), ctx
+        return collated_batch, ctx
     
     @property
     def default_collate_mode(self):
@@ -515,3 +622,5 @@ class QuadtreeCollator(KDSingleCollator):
     def __call__(self, batch):
         raise NotImplementedError("wrap KDSingleCollator with KDSingleCollatorWrapper")
 
+
+quadtree_collator = QuadtreeCollator

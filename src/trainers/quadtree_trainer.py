@@ -98,7 +98,7 @@ class QuadtreeTrainer(SgdTrainer):
 
     @cached_property
     def dataset_mode(self):
-        return "input_fields output_fields query_pos timestep velocity target cond_vec target_h1 target_h5 scalar_target_h1 scalar_target_h5"
+        return "timestep velocity target cond_vec target_h1 target_h5 scalar_target_h1 scalar_target_h5 input_fields output_fields"
 
     def get_trainer_model(self, model):
         return self.Model(model=model, trainer=self)
@@ -148,26 +148,35 @@ class QuadtreeTrainer(SgdTrainer):
             quadtree_batch_idx = ctx["quadtree_batch_idx"].to(self.model.device, non_blocking=True)
             per_sample_quadtrees = ctx["per_sample_quadtrees"]
             
-            # Extract timestep, velocity, target, query_pos, etc. from batch if available
+            # Extract timestep, velocity, target, etc. from batch if available
+            # For quadtree collator, batch is empty tuple, data is in ctx
+            # Try to get from batch first, fallback to ctx if batch is empty
+            def safe_get_item(item_name):
+                if batch and len(batch) > 0 and ModeWrapper.has_item(mode=dataset_mode, item=item_name):
+                    try:
+                        return self.to_device(item=item_name, batch=batch, dataset_mode=dataset_mode)
+                    except (IndexError, KeyError, AttributeError):
+                        pass
+                # Fallback to ctx if available
+                if ctx and item_name in ctx:
+                    val = ctx[item_name]
+                    if isinstance(val, torch.Tensor):
+                        return val.to(self.model.device, non_blocking=True)
+                    return val
+                return None
+            
             data = dict(
-                timestep=self.to_device(item="timestep", batch=batch, dataset_mode=dataset_mode) if ModeWrapper.has_item(mode=dataset_mode, item="timestep") else None,
-                velocity=self.to_device(item="velocity", batch=batch, dataset_mode=dataset_mode) if ModeWrapper.has_item(mode=dataset_mode, item="velocity") else None,
-                target=self.to_device(item="target", batch=batch, dataset_mode=dataset_mode) if ModeWrapper.has_item(mode=dataset_mode, item="target") else None,
-                query_pos=self.to_device(item="query_pos", batch=batch, dataset_mode=dataset_mode) if ModeWrapper.has_item(mode=dataset_mode, item="query_pos") else None,
-                cond_vec=self.to_device(item="cond_vec", batch=batch, dataset_mode=dataset_mode) if ModeWrapper.has_item(mode=dataset_mode, item="cond_vec") else None,
-                target_h1_raw=self.to_device(item="target_h1", batch=batch, dataset_mode=dataset_mode) if ModeWrapper.has_item(mode=dataset_mode, item="target_h1") else None,
-                target_h5_raw=self.to_device(item="target_h5", batch=batch, dataset_mode=dataset_mode) if ModeWrapper.has_item(mode=dataset_mode, item="target_h5") else None,
-                scalar_target_h1=self.to_device(item="scalar_target_h1", batch=batch, dataset_mode=dataset_mode) if ModeWrapper.has_item(mode=dataset_mode, item="scalar_target_h1") else None,
-                scalar_target_h5=self.to_device(item="scalar_target_h5", batch=batch, dataset_mode=dataset_mode) if ModeWrapper.has_item(mode=dataset_mode, item="scalar_target_h5") else None,
+                timestep=safe_get_item("timestep"),
+                velocity=safe_get_item("velocity"),
+                target=safe_get_item("target"),
+                cond_vec=safe_get_item("cond_vec"),
+                target_h1_raw=safe_get_item("target_h1"),
+                target_h5_raw=safe_get_item("target_h5"),
+                scalar_target_h1=safe_get_item("scalar_target_h1"),
+                scalar_target_h5=safe_get_item("scalar_target_h5"),
             )
             data["batch_idx"] = quadtree_batch_idx
             data["per_sample_quadtrees"] = per_sample_quadtrees
-            
-            # Extract unbatch_idx and unbatch_select from context for decoder
-            if "unbatch_idx" in ctx:
-                data["unbatch_idx"] = ctx["unbatch_idx"].to(self.model.device, non_blocking=True)
-            if "unbatch_select" in ctx:
-                data["unbatch_select"] = ctx["unbatch_select"].to(self.model.device, non_blocking=True)
             target_h1 = data.pop("target_h1_raw", None)
             target_h5 = data.pop("target_h5_raw", None)
             target_ref = data.get("target")
@@ -233,10 +242,15 @@ class QuadtreeTrainer(SgdTrainer):
                 data, prep_timings = prepared, None
                 prep_mems = {}
 
-            target = data.pop("target")
+            target = data.pop("target", None)
             batch_idx = data["batch_idx"]
-            batch_size = batch_idx.max() + 1
+            batch_size = int(batch_idx.max().item() + 1)
             per_sample_quadtrees = data.pop("per_sample_quadtrees")
+            
+            # Target will be extracted after model forward pass when we have x_hat shape
+            # We need to match target to x_hat shape (which is at query_pos)
+            # Store per_sample_quadtrees for later target extraction
+            _per_sample_quadtrees_for_target = per_sample_quadtrees
 
             # enable inner component timings strictly via config timing.enabled
             timing_cfg = getattr(self.trainer, "timing_cfg", None)
@@ -263,19 +277,19 @@ class QuadtreeTrainer(SgdTrainer):
                 loss_fn = self.trainer.loss_function
                 inner_fn = getattr(loss_fn, "loss_function", loss_fn)
                 name_lower = type(inner_fn).__name__.lower()
-                self.trainer.logger.info(f"[DEBUG] loss_fn type: {type(loss_fn).__name__}, inner_fn type: {type(inner_fn).__name__}")
-                self.trainer.logger.info(f"[DEBUG] use_rel_l2 will be: {('rel' in name_lower and 'l2' in name_lower)}")
-                self.trainer.logger.info(f"[DEBUG] use_dual: {use_dual} (target_h1 is None: {target_h1 is None}, target_h5 is None: {target_h5 is None})")
+                # self.trainer.logger.info(f"[DEBUG] loss_fn type: {type(loss_fn).__name__}, inner_fn type: {type(inner_fn).__name__}")
+                # self.trainer.logger.info(f"[DEBUG] use_rel_l2 will be: {('rel' in name_lower and 'l2' in name_lower)}")
+                # self.trainer.logger.info(f"[DEBUG] use_dual: {use_dual} (target_h1 is None: {target_h1 is None}, target_h5 is None: {target_h5 is None})")
 
             def _call_model(horizon_val):
                 horizon_tensor = None
                 if cond_vec is not None:
-                    batch_size_local = (data["batch_idx"].max() + 1)
+                    batch_size_local = int(data["batch_idx"].max().item() + 1)
                     horizon_tensor = torch.full((batch_size_local,), float(horizon_val), device=self.model.device, dtype=torch.float32)
                 
                 # Prepare quadtree data for encoder
-                # For each sample, concatenate input quadtrees (4 timesteps) along feature dimension
-                # Each timestep has features of shape (M_t, 4), we need (M, 16) where M is the union of all nodes
+                # For each sample, concatenate input quadtrees (4 timesteps) along channel dimension
+                # Use the first timestep's quadtree structure as reference, align other timesteps to it
                 all_features = []
                 all_node_positions = []
                 all_node_depths = []
@@ -284,81 +298,61 @@ class QuadtreeTrainer(SgdTrainer):
                 for sample_idx, sample_quadtrees in enumerate(per_sample_quadtrees):
                     input_quadtrees = sample_quadtrees['input_quadtrees']
                     
-                    # Collect features from all 4 timesteps
-                    timestep_features = []
-                    timestep_positions = []
-                    timestep_depths = []
+                    if len(input_quadtrees) == 0:
+                        continue
                     
-                    for t_idx, qd in enumerate(input_quadtrees):
-                        point_hier = qd['point_hierarchies'].to(self.model.device)
-                        features = qd['features'].to(self.model.device)  # (M_t, 4)
-                        pyramids = qd['pyramids'].to(self.model.device)
-                        
-                        M = point_hier.shape[0]
-                        if pyramids.ndim == 3:
-                            pyramids = pyramids[0]
-                        
-                        # Compute depths from pyramid structure
-                        max_level = pyramids.shape[1] - 1
-                        node_depths = torch.zeros(M, dtype=torch.float32, device=self.model.device)
-                        for level in range(max_level + 1):
-                            start_idx = int(pyramids[1, level].item())
-                            if level < max_level:
-                                end_idx = int(pyramids[1, level + 1].item())
-                            else:
-                                end_idx = M
-                            if end_idx > start_idx:
-                                node_depths[start_idx:end_idx] = level
-                        
-                        # Compute positions from point_hierarchies and depths
-                        level_powers = 2.0 ** node_depths
-                        node_positions = (point_hier.float() / level_powers.unsqueeze(-1)) * 2.0 - 1.0
-                        
-                        timestep_features.append(features)
-                        timestep_positions.append(node_positions)
-                        timestep_depths.append(node_depths)
+                    # Use first timestep as reference structure
+                    ref_qd = input_quadtrees[0]
+                    ref_point_hier = ref_qd['point_hierarchies'].to(self.model.device)
+                    ref_pyramids = ref_qd['pyramids'].to(self.model.device)
+                    if ref_pyramids.ndim == 3:
+                        ref_pyramids = ref_pyramids[0]
                     
-                    # Concatenate features along channel dimension: (M, 4) × 4 -> (M, 16)
-                    # Note: This assumes all timesteps have the same quadtree structure (same M)
-                    # If they differ, we need to align them (for now, assume they're the same)
-                    if len(timestep_features) > 0:
-                        # Check if all have same number of nodes
-                        M_list = [f.shape[0] for f in timestep_features]
-                        if len(set(M_list)) == 1:
-                            # All timesteps have same number of nodes - simple concatenation
-                            features_concat = torch.cat(timestep_features, dim=1)  # (M, 16)
-                            # Use positions and depths from first timestep (they should be similar)
-                            node_positions = timestep_positions[0]
-                            node_depths = timestep_depths[0]
+                    M = ref_point_hier.shape[0]
+                    
+                    # Compute depths and positions for reference structure
+                    max_level = ref_pyramids.shape[1] - 1
+                    node_depths = torch.zeros(M, dtype=torch.float32, device=self.model.device)
+                    for level in range(max_level + 1):
+                        start_idx = int(ref_pyramids[1, level].item())
+                        if level < max_level:
+                            end_idx = int(ref_pyramids[1, level + 1].item())
                         else:
-                            # Different numbers of nodes - need to align
-                            # For now, use the maximum M and pad/truncate
-                            M_max = max(M_list)
-                            features_padded = []
-                            for f in timestep_features:
-                                if f.shape[0] < M_max:
-                                    # Pad with zeros
-                                    padding = torch.zeros(M_max - f.shape[0], f.shape[1], device=f.device, dtype=f.dtype)
-                                    f = torch.cat([f, padding], dim=0)
-                                elif f.shape[0] > M_max:
-                                    # Truncate
-                                    f = f[:M_max]
-                                features_padded.append(f)
-                            features_concat = torch.cat(features_padded, dim=1)  # (M_max, 16)
-                            node_positions = timestep_positions[0]
-                            if node_positions.shape[0] < M_max:
-                                padding = torch.zeros(M_max - node_positions.shape[0], node_positions.shape[1], device=node_positions.device, dtype=node_positions.dtype)
-                                node_positions = torch.cat([node_positions, padding], dim=0)
-                            elif node_positions.shape[0] > M_max:
-                                node_positions = node_positions[:M_max]
-                            node_depths = timestep_depths[0]
-                            if node_depths.shape[0] < M_max:
-                                padding = torch.zeros(M_max - node_depths.shape[0], device=node_depths.device, dtype=node_depths.dtype)
-                                node_depths = torch.cat([node_depths, padding], dim=0)
-                            elif node_depths.shape[0] > M_max:
-                                node_depths = node_depths[:M_max]
-                        
-                        M = features_concat.shape[0]
+                            end_idx = M
+                        if end_idx > start_idx:
+                            node_depths[start_idx:end_idx] = level
+                    
+                    level_powers = 2.0 ** node_depths
+                    node_positions = (ref_point_hier.float() / level_powers.unsqueeze(-1)) * 2.0 - 1.0
+                    
+                    # Collect features from all timesteps and concatenate along channel dimension
+                    timestep_features = []
+                    for t_idx, qd in enumerate(input_quadtrees):
+                        features = qd['features'].to(self.model.device)  # (M_t, C)
+                        # If this timestep has different number of nodes, we need to align
+                        # For now, assume same structure (will pad/truncate if needed)
+                        if features.shape[0] == M:
+                            timestep_features.append(features)
+                        elif features.shape[0] < M:
+                            # Pad with zeros
+                            padding = torch.zeros(M - features.shape[0], features.shape[1], 
+                                                device=features.device, dtype=features.dtype)
+                            timestep_features.append(torch.cat([features, padding], dim=0))
+                        else:
+                            # Truncate
+                            timestep_features.append(features[:M])
+                    
+                    # Debug: log feature shapes
+                    # if self._timing_count == 0 and sample_idx == 0:
+                    #     self.trainer.logger.info(f"[QUADTREE TRAINER DEBUG] Sample {sample_idx}: M={M}, num_timesteps={len(timestep_features)}")
+                    #     for t_idx, f in enumerate(timestep_features):
+                    #         self.trainer.logger.info(f"  Timestep {t_idx}: features.shape={f.shape}")
+                    
+                    # Concatenate features from all timesteps along channel dimension: (M, C*4)
+                    if len(timestep_features) > 0:
+                        features_concat = torch.cat(timestep_features, dim=1)  # (M, C*T)
+                        # if self._timing_count == 0 and sample_idx == 0:
+                        #     self.trainer.logger.info(f"[QUADTREE TRAINER DEBUG] After concat: features_concat.shape={features_concat.shape}")
                         all_features.append(features_concat)
                         all_node_positions.append(node_positions)
                         all_node_depths.append(node_depths)
@@ -367,41 +361,109 @@ class QuadtreeTrainer(SgdTrainer):
                 if len(all_features) == 0:
                     raise ValueError("No input quadtree nodes found in batch")
                 
-                # Concatenate all samples
-                x_quadtree = torch.cat(all_features, dim=0)  # (N_total, 16)
+                # Concatenate all samples' nodes
+                x_quadtree = torch.cat(all_features, dim=0)  # (N_total, C*T)
                 node_positions_quadtree = torch.cat(all_node_positions, dim=0)
                 node_depths_quadtree = torch.cat(all_node_depths, dim=0)
                 quadtree_batch_idx = torch.tensor(all_batch_indices, dtype=torch.long, device=self.model.device)
                 
-                # Debug logging for first call
-                if self._timing_count == 0:
-                    self.trainer.logger.info(f"[DEBUG] Quadtree encoder input shapes:")
-                    self.trainer.logger.info(f"  x_quadtree.shape={x_quadtree.shape} (expected: (N, 16))")
-                    self.trainer.logger.info(f"  node_positions_quadtree.shape={node_positions_quadtree.shape}")
-                    self.trainer.logger.info(f"  node_depths_quadtree.shape={node_depths_quadtree.shape}")
-                    self.trainer.logger.info(f"  quadtree_batch_idx.shape={quadtree_batch_idx.shape}, batch_size={quadtree_batch_idx.max().item() + 1 if len(quadtree_batch_idx) > 0 else 0}")
+                # Prepare model kwargs - exclude condition, it's computed internally
+                # Ensure timestep and velocity are properly shaped (1-d tensors with batch_size elements)
+                timestep = data.get("timestep")
+                velocity = data.get("velocity")
+                if timestep is not None:
+                    if timestep.ndim == 0:
+                        # Scalar -> expand to (batch_size,)
+                        timestep = timestep.expand(batch_size)
+                    elif timestep.ndim == 1 and timestep.shape[0] != batch_size:
+                        # Wrong size -> repeat or expand
+                        if timestep.shape[0] == 1:
+                            timestep = timestep.expand(batch_size)
+                        else:
+                            timestep = timestep[:batch_size]
+                if velocity is not None:
+                    if velocity.ndim == 0:
+                        # Scalar -> expand to (batch_size,)
+                        velocity = velocity.expand(batch_size)
+                    elif velocity.ndim == 1 and velocity.shape[0] != batch_size:
+                        # Wrong size -> repeat or expand
+                        if velocity.shape[0] == 1:
+                            velocity = velocity.expand(batch_size)
+                        else:
+                            velocity = velocity[:batch_size]
                 
-                return self.model(
-                    x=x_quadtree,
-                    geometry2d=data.get("geometry2d", None),
-                    timestep=data.get("timestep", None),
-                    velocity=data.get("velocity", None),
-                    query_pos=data.get("query_pos", None),
-                    batch_idx=quadtree_batch_idx,
-                    unbatch_idx=data.get("unbatch_idx", None),
-                    unbatch_select=data.get("unbatch_select", None),
-                    node_positions=node_positions_quadtree,
-                    node_depths=node_depths_quadtree,
-                    cond_vec=cond_vec,
-                    **{k: v for k, v in data.items() if k not in ["target", "target_h1", "target_h5", "scalar_target_h1", "scalar_target_h5", "cond_vec", "per_sample_quadtrees", "batch_idx", "geometry2d", "timestep", "velocity", "query_pos", "unbatch_idx", "unbatch_select"]},
-                    **forward_kwargs,
-                    horizon=horizon_tensor,
-                    detach_reconstructions=self.trainer.detach_reconstructions,
-                    reconstruct_prev_x=self.trainer.reconstruct_prev_x_weight > 0,
-                    reconstruct_dynamics=self.trainer.reconstruct_dynamics_weight > 0,
-                    record_component_timings=profile_flag,
-                    record_component_memory=record_memory,
-                )
+                # Get query_pos from dataset (original grid positions for decoder)
+                # query_pos should be (batch_size, num_query_points, 2) for 2D
+                # Also need unbatch_idx and unbatch_select for decoder
+                query_pos = data.get("query_pos")
+                unbatch_idx = data.get("unbatch_idx")
+                unbatch_select = data.get("unbatch_select")
+                
+                if query_pos is None and self.trainer.data_container is not None:
+                    # Try to get from dataset
+                    try:
+                        dataset = self.trainer.data_container.get_dataset("train")
+                        if hasattr(dataset, 'getitem_query_pos'):
+                            # Collect query_pos for all samples in batch
+                            query_pos_list = []
+                            query_pos_lens = []
+                            for sample_idx in range(batch_size):
+                                qp = dataset.getitem_query_pos(sample_idx)
+                                if qp is not None:
+                                    qp = torch.as_tensor(qp, dtype=torch.float32)
+                                    query_pos_list.append(qp)
+                                    query_pos_lens.append(qp.shape[0])
+                            if query_pos_list:
+                                # Stack to (batch_size, max_num_query_points, 2) with padding
+                                max_len = max(query_pos_lens)
+                                padded_list = []
+                                for qp in query_pos_list:
+                                    if qp.shape[0] < max_len:
+                                        # Pad with zeros
+                                        padding = torch.zeros(max_len - qp.shape[0], qp.shape[1], dtype=qp.dtype)
+                                        qp = torch.cat([qp, padding], dim=0)
+                                    padded_list.append(qp)
+                                query_pos = torch.stack(padded_list, dim=0).to(self.model.device)
+                                
+                                # Create unbatch_idx: (num_total_query_points,)
+                                if unbatch_idx is None:
+                                    unbatch_idx_list = []
+                                    for sample_idx, qp_len in enumerate(query_pos_lens):
+                                        unbatch_idx_list.extend([sample_idx] * qp_len)
+                                    unbatch_idx = torch.tensor(unbatch_idx_list, dtype=torch.long, device=self.model.device)
+                                
+                                # Create unbatch_select: list of indices into unbatched tuple
+                                # unbatched will be a tuple of (batch_size) tensors, one per sample
+                                # unbatch_select should be a list/tensor of indices [0, 1, 2, ...] to select all
+                                if unbatch_select is None:
+                                    # Select all samples: [0, 1, 2, ..., batch_size-1]
+                                    unbatch_select = torch.arange(batch_size, dtype=torch.long, device=self.model.device)
+                    except (AttributeError, KeyError, IndexError):
+                        pass
+                
+                model_kwargs = {
+                    "x": x_quadtree,
+                    "node_positions": node_positions_quadtree,
+                    "node_depths": node_depths_quadtree,
+                    "batch_idx": quadtree_batch_idx,
+                    "geometry2d": data.get("geometry2d"),
+                    "query_pos": query_pos,
+                    "unbatch_idx": unbatch_idx,
+                    "unbatch_select": unbatch_select,
+                    "timestep": timestep,
+                    "velocity": velocity,
+                    "cond_vec": cond_vec,  # Pass cond_vec, not condition
+                    "horizon": horizon_tensor,
+                    "detach_reconstructions": self.trainer.detach_reconstructions,
+                    "reconstruct_prev_x": self.trainer.reconstruct_prev_x_weight > 0,
+                    "reconstruct_dynamics": self.trainer.reconstruct_dynamics_weight > 0,
+                    "record_component_timings": profile_flag,
+                    "record_component_memory": record_memory,
+                }
+                # Add forward_kwargs (e.g., target if reconstruct_from_target)
+                model_kwargs.update(forward_kwargs)
+                
+                return self.model(**model_kwargs)
 
             if use_dual:
                 outputs_h1 = _call_model(1.0)
@@ -477,7 +539,8 @@ class QuadtreeTrainer(SgdTrainer):
             if not self._dump_done:
                 out_dir = self.trainer.path_provider.stage_output_path / "tensors"
                 out_dir.mkdir(parents=True, exist_ok=True)
-                torch.save(target.detach().cpu(), out_dir / f"{self._dump_counter:04d}_target.pt")
+                if target is not None:
+                    torch.save(target.detach().cpu(), out_dir / f"{self._dump_counter:04d}_target.pt")
                 torch.save(model_outputs["x_hat"].detach().cpu(), out_dir / f"{self._dump_counter:04d}_xhat.pt")
                 if data.get("timestep") is not None:
                     torch.save(data["timestep"].detach().cpu(), out_dir / f"{self._dump_counter:04d}_timestep.pt")
@@ -522,7 +585,16 @@ class QuadtreeTrainer(SgdTrainer):
             inner_fn = getattr(loss_fn, "loss_function", loss_fn)
             name_lower = type(inner_fn).__name__.lower()
             use_rel_l2 = ("rel" in name_lower and "l2" in name_lower)
-            eps = torch.finfo(target.dtype).eps
+            
+            # Extract target at original grid positions if not provided
+            # Target should match x_hat shape (at query_pos)
+            if target is None:
+                # Will extract after model forward when we have x_hat shape
+                target = None
+                target_batch_idx = None
+            else:
+                target_batch_idx = batch_idx
+            eps = torch.finfo(torch.float32).eps  # Default eps, will use target.dtype if target is not None
             
             # Helper to compute sample-level rel_l2 loss with proper token aggregation
             # Computes ||pred - tgt||_2 / ||tgt||_2 (same as metrics/rel_l2)
@@ -533,69 +605,13 @@ class QuadtreeTrainer(SgdTrainer):
                 original_tgt_shape = tgt.shape
                 
                 # Aggressive debug - always log first few calls
-                if self._timing_count < 3:
-                    self.trainer.logger.error(f"[SHAPE DEBUG] compute_sample_rel_l2: pred.shape={pred.shape}, pred.numel()={pred.numel()}, pred.ndim={pred.ndim}")
-                    self.trainer.logger.error(f"[SHAPE DEBUG] compute_sample_rel_l2: tgt.shape={tgt.shape}, tgt.numel()={tgt.numel()}, tgt.ndim={tgt.ndim}")
-                    self.trainer.logger.error(f"[SHAPE DEBUG] compute_sample_rel_l2: b_idx.shape={b_idx.shape}, b_size={b_size}")
+                # if self._timing_count < 3:
+                #     self.trainer.logger.error(f"[SHAPE DEBUG] compute_sample_rel_l2: pred.shape={pred.shape}, pred.numel()={pred.numel()}, pred.ndim={pred.ndim}")
+                #     self.trainer.logger.error(f"[SHAPE DEBUG] compute_sample_rel_l2: tgt.shape={tgt.shape}, tgt.numel()={tgt.numel()}, tgt.ndim={tgt.ndim}")
+                #     self.trainer.logger.error(f"[SHAPE DEBUG] compute_sample_rel_l2: b_idx.shape={b_idx.shape}, b_size={b_size}")
                 
-                # Flag to track if we've already handled shape matching
-                shapes_already_matched = False
-                
-                # Handle 3D target (batched): (B, N_per_sample, C) -> flatten to (B*N_per_sample, C)
-                if tgt.ndim == 3 and pred.ndim == 2:
-                    # Target is (B, N, C), pred is (B*N, C) - reshape target to match pred
-                    B, N, C = tgt.shape
-                    expected_pred_N = B * N
-                    if self._timing_count < 3:
-                        self.trainer.logger.error(f"[SHAPE DEBUG] 3D target detected: B={B}, N={N}, C={C}, expected_pred_N={expected_pred_N}")
-                        self.trainer.logger.error(f"[SHAPE DEBUG] pred.shape={pred.shape}, checking: pred.shape[0] == {expected_pred_N}? {pred.shape[0] == expected_pred_N}, pred.shape[1] == {C}? {pred.shape[1] == C}")
-                    if pred.shape[0] == expected_pred_N and pred.shape[1] == C:
-                        # Perfect match - flatten target and create batch_idx
-                        tgt = tgt.view(B * N, C)  # Flatten target to match pred
-                        # Create batch_idx for flattened target: [0,0,...,0, 1,1,...,1, ..., B-1,B-1,...,B-1]
-                        b_idx = torch.arange(B, device=tgt.device, dtype=torch.long).repeat_interleave(N)
-                        b_size = B
-                        shapes_already_matched = True
-                    elif pred.shape[0] == expected_pred_N:
-                        # Channel dimension might differ - try to match
-                        if pred.shape[1] == C:
-                            tgt = tgt.view(B * N, C)
-                            b_idx = torch.arange(B, device=tgt.device, dtype=torch.long).repeat_interleave(N)
-                            b_size = B
-                            shapes_already_matched = True
-                        else:
-                            # Mismatch in C dimension
-                            self.trainer.logger.error(f"[SHAPE ERROR] Channel mismatch: pred.shape={pred.shape}, tgt.shape={original_tgt_shape}")
-                            raise RuntimeError(f"Channel mismatch: pred has {pred.shape[1]} channels, tgt has {C} channels")
-                    elif pred.numel() == tgt.numel():
-                        # Total elements match - reshape both
-                        pred = pred.view(B, N, C)
-                        # Now both are 3D, need to flatten for loss computation
-                        pred = pred.view(B * N, C)
-                        tgt = tgt.view(B * N, C)
-                        b_idx = torch.arange(B, device=tgt.device, dtype=torch.long).repeat_interleave(N)
-                        b_size = B
-                        shapes_already_matched = True
-                    else:
-                        self.trainer.logger.error(f"[SHAPE ERROR] Cannot match shapes: pred.shape={pred.shape}, tgt.shape={original_tgt_shape}")
-                        self.trainer.logger.error(f"  Expected pred.shape[0]={expected_pred_N}, got {pred.shape[0]}")
-                        self.trainer.logger.error(f"  pred.numel()={pred.numel()}, tgt.numel()={tgt.numel()}")
-                        raise RuntimeError(f"Cannot match shapes: pred.shape={pred.shape}, tgt.shape={original_tgt_shape}")
-                elif tgt.ndim == 3 and pred.ndim == 3:
-                    # Both 3D - flatten both
-                    B, N, C = tgt.shape
-                    if pred.shape == tgt.shape:
-                        pred = pred.view(B * N, C)
-                        tgt = tgt.view(B * N, C)
-                        b_idx = torch.arange(B, device=tgt.device, dtype=torch.long).repeat_interleave(N)
-                        b_size = B
-                        shapes_already_matched = True
-                    else:
-                        self.trainer.logger.error(f"[SHAPE ERROR] Both 3D but shapes don't match: pred.shape={pred.shape}, tgt.shape={original_tgt_shape}")
-                        raise RuntimeError(f"Cannot match 3D shapes: pred.shape={pred.shape}, tgt.shape={original_tgt_shape}")
-                
-                # Ensure pred is 2D (only if not already handled above)
-                if not shapes_already_matched and pred.ndim == 1:
+                # Ensure pred is 2D
+                if pred.ndim == 1:
                     # pred is 1D - reshape assuming it's (N*C,) -> (N, C)
                     # Assume C=4 (from output_shape)
                     if pred.numel() % 4 == 0:
@@ -607,8 +623,8 @@ class QuadtreeTrainer(SgdTrainer):
                             C = pred.numel() // N_from_batch
                             pred = pred.view(-1, C)
                 
-                # Ensure tgt matches pred shape (only if not already handled)
-                if not shapes_already_matched and pred.ndim == 2:
+                # Ensure tgt matches pred shape
+                if pred.ndim == 2:
                     if tgt.ndim == 1:
                         # tgt is 1D - need to reshape to match pred
                         if tgt.numel() == pred.shape[0]:
@@ -648,7 +664,6 @@ class QuadtreeTrainer(SgdTrainer):
                 # Final check - if shapes still don't match, log and raise
                 if pred.shape != tgt.shape:
                     self.trainer.logger.error(f"[SHAPE MISMATCH] After fix: pred={pred.shape} (orig={original_pred_shape}), tgt={tgt.shape} (orig={original_tgt_shape})")
-                    self.trainer.logger.error(f"  shapes_already_matched={shapes_already_matched}")
                     raise RuntimeError(f"Cannot match shapes: pred={pred.shape}, tgt={tgt.shape}")
                 
                 counts = torch.bincount(b_idx, minlength=b_size)
@@ -690,15 +705,86 @@ class QuadtreeTrainer(SgdTrainer):
                 # Use sample-level rel_l2 aggregation (same as metrics/rel_l2 but differentiable)
                 if use_dual:
                     # Debug shapes before computation
-                    if self._timing_count == 0:
-                        self.trainer.logger.info(f"[DEBUG] Before compute_sample_rel_l2:")
-                        self.trainer.logger.info(f"  outputs_h1['x_hat'].shape={outputs_h1['x_hat'].shape}")
-                        self.trainer.logger.info(f"  target_h1.shape={target_h1.shape}")
-                        self.trainer.logger.info(f"  batch_idx.shape={batch_idx.shape}, batch_size={batch_size}")
+                    # if self._timing_count == 0:
+                    #     self.trainer.logger.info(f"[DEBUG] Before compute_sample_rel_l2:")
+                    #     self.trainer.logger.info(f"  outputs_h1['x_hat'].shape={outputs_h1['x_hat'].shape}")
+                    #     self.trainer.logger.info(f"  target_h1.shape={target_h1.shape}")
+                    #     self.trainer.logger.info(f"  batch_idx.shape={batch_idx.shape}, batch_size={batch_size}")
                     rel_l2_h1 = compute_sample_rel_l2(outputs_h1["x_hat"], target_h1, batch_idx, batch_size)
                     rel_l2_h5 = compute_sample_rel_l2(outputs_h5["x_hat"], target_h5, batch_idx, batch_size)
                     x_hat_loss_per_sample = 0.5 * (rel_l2_h1 + rel_l2_h5)
                 else:
+                    # Extract target at original grid positions if needed
+                    if target is None:
+                        x_hat = model_outputs["x_hat"]  # (N_query, C)
+                        # Get target from dataset at original grid positions (matching query_pos)
+                        try:
+                            dataset = self.trainer.data_container.get_dataset("train")
+                            target_list = []
+                            target_batch_idx_list = []
+                            for sample_idx in range(batch_size):
+                                if hasattr(dataset, 'getitem_target'):
+                                    tgt = dataset.getitem_target(sample_idx)
+                                    if tgt is not None:
+                                        tgt = torch.as_tensor(tgt, dtype=torch.float32)
+                                        # tgt might be (H, W, C) or (N, C) - flatten to (N, C)
+                                        if tgt.ndim == 3:
+                                            H, W, C = tgt.shape
+                                            tgt = tgt.reshape(H * W, C)
+                                        target_list.append(tgt.to(self.model.device))
+                                        target_batch_idx_list.extend([sample_idx] * tgt.shape[0])
+                            
+                            if target_list:
+                                target = torch.cat(target_list, dim=0)  # (N_total, C)
+                                target_batch_idx = torch.tensor(target_batch_idx_list, dtype=torch.long, device=self.model.device)
+                                # Use target_batch_idx if shapes match
+                                if target.shape[0] == x_hat.shape[0]:
+                                    batch_idx = target_batch_idx
+                        except (AttributeError, KeyError, IndexError) as e:
+                            self.trainer.logger.error(f"Could not extract target: {e}")
+                            raise RuntimeError(f"Cannot compute loss: target extraction failed: {e}")
+                    
+                    # Debug: log shapes and values before loss computation
+                    # if self._timing_count < 3:
+                    #     x_hat = model_outputs["x_hat"]
+                    #     print(f"[LOSS DEBUG] Before compute_sample_rel_l2:")
+                    #     print(f"  x_hat.shape={x_hat.shape}, min={x_hat.min().item():.6f}, max={x_hat.max().item():.6f}, mean={x_hat.mean().item():.6f}, std={x_hat.std().item():.6f}")
+                    #     print(f"  target.shape={target.shape}, min={target.min().item():.6f}, max={target.max().item():.6f}, mean={target.mean().item():.6f}, std={target.std().item():.6f}")
+                    #     print(f"  batch_idx.shape={batch_idx.shape}, batch_size={batch_size}")
+                    #     # Check for NaNs/Infs
+                    #     if torch.isnan(x_hat).any():
+                    #         print(f"  [ERROR] NaN detected in x_hat!")
+                    #     if torch.isinf(x_hat).any():
+                    #         print(f"  [ERROR] Inf detected in x_hat!")
+                    #     if torch.isnan(target).any():
+                    #         print(f"  [ERROR] NaN detected in target!")
+                    #     if torch.isinf(target).any():
+                    #         print(f"  [ERROR] Inf detected in target!")
+                    #     # Check relative error and absolute error
+                    #     abs_error = (x_hat - target).abs()
+                    #     rel_error = (abs_error / (target.abs() + 1e-8)).mean().item()
+                    #     mse = ((x_hat - target) ** 2).mean().item()
+                    #     target_norm = (target ** 2).sum().sqrt().item()
+                    #     print(f"  MSE: {mse:.6f}, Target norm: {target_norm:.6f}")
+                    #     print(f"  Relative error (abs): {rel_error:.6f}")
+                    #     print(f"  Absolute error: mean={abs_error.mean().item():.6f}, max={abs_error.max().item():.6f}")
+                    #     # Check per-channel errors
+                    #     for c in range(min(4, x_hat.shape[1])):
+                    #         ch_abs_err = abs_error[:, c].mean().item()
+                    #         ch_rel_err = (abs_error[:, c] / (target[:, c].abs() + 1e-8)).mean().item()
+                    #         print(f"  Channel {c}: abs_err={ch_abs_err:.6f}, rel_err={ch_rel_err:.6f}")
+                    #     # Check gradients (after backward pass, not before)
+                    #     # Gradients will be available after backward, check in update method instead
+                    
+                    # # Debug: check latent and dynamics before loss
+                    # if self._timing_count < 3:
+                    #     if "dynamics" in model_outputs:
+                    #         dynamics = model_outputs["dynamics"]
+                    #         print(f"[MODEL DEBUG] dynamics.shape={dynamics.shape}, mean={dynamics.mean().item():.6f}, std={dynamics.std().item():.6f}")
+                    #     if "prev_dynamics" in model_outputs:
+                    #         prev_dynamics = model_outputs["prev_dynamics"]
+                    #         print(f"[MODEL DEBUG] prev_dynamics.shape={prev_dynamics.shape}, mean={prev_dynamics.mean().item():.6f}, std={prev_dynamics.std().item():.6f}")
+                    
                     x_hat_loss_per_sample = compute_sample_rel_l2(model_outputs["x_hat"], target, batch_idx, batch_size)
                 
                 if reduction == "mean":
@@ -776,18 +862,10 @@ class QuadtreeTrainer(SgdTrainer):
             # per-horizon logging for fields
             with torch.no_grad():
                 if use_dual:
-                    # Handle shape mismatches for logging
-                    pred_h1 = outputs_h1["x_hat"]
-                    pred_h5 = outputs_h5["x_hat"]
-                    if pred_h1.ndim == 2 and target_h1.ndim == 3:
-                        B, N, C = target_h1.shape
-                        if pred_h1.shape[0] == B * N:
-                            pred_h1 = pred_h1.view(B, N, C)
-                            pred_h5 = pred_h5.view(B, N, C)
-                    field_mse_h1 = ((pred_h1 - target_h1) ** 2).mean()
-                    field_mse_h5 = ((pred_h5 - target_h5) ** 2).mean()
-                    field_mae_h1 = (pred_h1 - target_h1).abs().mean()
-                    field_mae_h5 = (pred_h5 - target_h5).abs().mean()
+                    field_mse_h1 = ((outputs_h1["x_hat"] - target_h1) ** 2).mean()
+                    field_mse_h5 = ((outputs_h5["x_hat"] - target_h5) ** 2).mean()
+                    field_mae_h1 = (outputs_h1["x_hat"] - target_h1).abs().mean()
+                    field_mae_h5 = (outputs_h5["x_hat"] - target_h5).abs().mean()
                     infos["loss/field_h1"] = field_mse_h1
                     infos["loss/field_h5"] = field_mse_h5
                     infos["metrics/field_mae_h1"] = field_mae_h1
@@ -989,33 +1067,6 @@ class QuadtreeTrainer(SgdTrainer):
                 indptr[1:] = counts.cumsum(dim=0)
                 # Field metrics (token-based): compute rel L1/L2 with per-sample aggregation
                 def field_rel_metrics(pred, tgt):
-                    # Handle shape mismatches: pred might be (N, C) while tgt is (B, N_per_sample, C)
-                    if tgt.ndim == 3 and pred.ndim == 2:
-                        B, N, C = tgt.shape
-                        if pred.shape[0] == B * N and pred.shape[1] == C:
-                            tgt = tgt.view(B * N, C)
-                            # Create batch_idx for flattened target
-                            batch_idx_flat = torch.arange(B, device=tgt.device).repeat_interleave(N)
-                            counts = torch.bincount(batch_idx_flat, minlength=B)
-                            indptr_flat = torch.zeros(B + 1, device=tgt.device, dtype=torch.long)
-                            indptr_flat[1:] = counts.cumsum(dim=0)
-                            indptr = indptr_flat
-                        else:
-                            raise RuntimeError(f"Cannot match shapes: pred.shape={pred.shape}, tgt.shape={tgt.shape}")
-                    elif pred.ndim == 3 and tgt.ndim == 3:
-                        # Both 3D - flatten both
-                        B, N, C = pred.shape
-                        pred = pred.view(B * N, C)
-                        tgt = tgt.view(B * N, C)
-                        batch_idx_flat = torch.arange(B, device=tgt.device).repeat_interleave(N)
-                        counts = torch.bincount(batch_idx_flat, minlength=B)
-                        indptr_flat = torch.zeros(B + 1, device=tgt.device, dtype=torch.long)
-                        indptr_flat[1:] = counts.cumsum(dim=0)
-                        indptr = indptr_flat
-                    else:
-                        # Both 2D - use existing indptr
-                        pass
-                    
                     diff = pred - tgt
                     abs_diff_per_point = diff.abs().sum(dim=1)
                     tgt_abs_per_point = tgt.abs().sum(dim=1)
@@ -1231,3 +1282,6 @@ class QuadtreeTrainer(SgdTrainer):
             self._debug_handles = []
             self._pending_grad_keys.clear()
             self._log_first_batch_stats = False
+
+
+quadtree_trainer = QuadtreeTrainer

@@ -1,12 +1,14 @@
 wandb: cvsim
-name: quadtree-trl2d-full-training
+name: quadtree-full-training-trl2d
 stage_name: stage1
 vars:
   lr: 5.0e-5
-  batch_size: 8
-  max_batch_size: 8
+  batch_size: 16
+  max_batch_size: 16
   epochs: 100
   num_latent_tokens: 512
+  radius_graph_r: 5.0
+  radius_graph_max_num_neighbors: 32
   norm: mean0std1_onfly
   clamp: 0
   clamp_mode: log
@@ -81,11 +83,11 @@ model:
     num_latent_tokens: ${vars.num_latent_tokens}
     enc_depth: 4
     embed_dim: 96
-    kwargs:
-      enc_dim: 96
-      perc_dim: 192
-      enc_num_attn_heads: 2
-      perc_num_attn_heads: 3
+    enc_dim: 96
+    perc_dim: 192
+    enc_num_attn_heads: 2
+    perc_num_attn_heads: 3
+    use_transformer_blocks: true
     optim: ${vars.optim}
   latent:
     kind: latent.transformer_model
@@ -107,7 +109,6 @@ trainer:
   max_epochs: ${vars.epochs}
   effective_batch_size: ${vars.batch_size}
   max_batch_size: ${vars.max_batch_size}
-  num_workers: 0
   loss_function:
     kind: elementwise_loss
     loss_function:
