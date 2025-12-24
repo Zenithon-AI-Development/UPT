@@ -10,7 +10,7 @@ This document contains benchmarking results for various model architectures trai
 - **Training Metric**: Relative L2 error
 - **Dataset**: The WELL / Zen WELL Garden (using same presplits as Polymathic benchmarks)
 - **Data Splits**: Train/validation/test presplits from The WELL dataset
-- **Hardware**: Each model trained on 1 GPU under full utilization
+- **Hardware**: Each model trained on 1 GPU (Nvidia L4) under full utilization unless specified otherwise
 - **Normalization**: Each channel normalized separately to 0 mean and standard deviation 1
 - **Hyperparameters**: Unless specified otherwise identical to the configuration from UPT/src/yamls/sim10k/upt/e100_lr5e5_17M_lat512_fp32.yaml
 
