@@ -52,7 +52,7 @@ This document contains benchmarking results for various model architectures trai
 | standard UPT | PoolTransformerPerceiver | TransformerModel | TransformerPerceiver | | | 22774.9s | 45332.0s | 158391.0s | 226381.0s | 431227.0s | 17.189.092 (1.477.632, 4.054.272, 5.356.992, 6.300.196) |25176.74 ms |  4.57 ms | 149.43 ms |
 | quadtree UPT | QuadtreeTransformerPerceiver | TransformerModel | TransformerPerceiver | | | 7013.4s | 5400.0s | 26607.0s | 78623.0s | - | 14.887.202 (1.477.632, 1.752.576, 5.356.992, 6.300.002) | 6.77ms | 3.25ms | 80.84ms |
 
-### Zpinch (multiple resolutions, https://zenithon-zengarden-datasets.web.app/flash_zpinch_2d_no_heating/)
+### Zpinch (multiple resolutions --> only 1024  =32^2 supernodes equal to lowest resolution total node count, https://zenithon-zengarden-datasets.web.app/flash_zpinch_2d_no_heating/)
 
 | Model | Encoder | Processor | Decoder | Rel L2 (test) | Rel L1 (test) | Time/Epoch (s) | Time to 50% Val Error (s) | Time to 20% Val Error (s) | Time to 10% Val Error (s) | Time to 5% Val Error (s) | # Parameters (Cond/Enc/Proc/Dec) | Inference - Encoder (ms) | Inference - Processor (ms) | Inference - Decoder (ms) |
 |-------|---------|-----------|---------|---------------|---------------|---------------------------|----------------------|----------------------|---------------------|---------------------|---------------|---------------------------|----------------------------|--------------------------|
